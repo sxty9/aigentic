@@ -17,14 +17,19 @@ const CLAUDE_FALLBACK = [
   { id: 'claude-opus-4-8', label: 'Opus' },
   { id: 'claude-haiku-4-5', label: 'Haiku' },
 ];
-// Effort applies to the Claude API only (ollama has none; the CLI carries but ignores it).
-// "Auto" = send no override, let the model pick — distinct from the explicit low/med/high.
+// Effort applies to both Claude engines — the API (output_config.effort) and the CLI
+// (--effort) — but not ollama. "Auto" = send no override, let the model pick; the rest are the
+// CLI/API levels low|medium|high|xhigh|max.
 const EFFORTS = [
   { value: '', label: 'Auto' },
   { value: 'low', label: 'Low' },
   { value: 'medium', label: 'Med' },
   { value: 'high', label: 'High' },
+  { value: 'xhigh', label: 'X-High' },
+  { value: 'max', label: 'Max' },
 ] as const;
+
+const usesEffort = (engine: string) => engine === 'claude-cli' || engine === 'claude-api';
 
 export interface Picker {
   engine: string;
@@ -71,7 +76,7 @@ export function usePicker(apiFor: (id: string) => ServiceApiClient): Picker {
 export function pickerFields(p: Picker): { model?: string; claude?: { effort: string } } {
   const out: { model?: string; claude?: { effort: string } } = {};
   if (p.model) out.model = p.model;
-  if (p.effort && p.engine === 'claude-api') out.claude = { effort: p.effort };
+  if (p.effort && usesEffort(p.engine)) out.claude = { effort: p.effort };
   return out;
 }
 
@@ -107,7 +112,7 @@ export function EnginePicker({ p, compact }: { p: Picker; compact?: boolean }) {
         </Text>
       ) : null}
 
-      {p.engine === 'claude-api' && (
+      {usesEffort(p.engine) && (
         <Stack gap={1}>
           {!compact && (
             <Text variant="caption" color="tertiary">

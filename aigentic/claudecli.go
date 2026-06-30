@@ -111,6 +111,18 @@ func NewClaudeCLI(cfg ClaudeCLIConfig, lim Limits) prizm.Processor {
 		if model != "" {
 			args = append(args, "--model", model)
 		}
+		// Reasoning effort: the CLI takes --effort (low|medium|high|xhigh|max), same set as the
+		// API leaf. Validate up front so a bad level is a 400, not an opaque CLI failure.
+		var effort string
+		if in.Claude != nil {
+			effort = in.Claude.Effort
+		}
+		if effort != "" {
+			if !validEffort(effort) {
+				return Result{}, fmt.Errorf("%w: bad effort %q", prizm.ErrInvalidRequest, effort)
+			}
+			args = append(args, "--effort", effort)
+		}
 		prompt, items, truncated, err := assemble(ctx, env, in, lim)
 		if err != nil {
 			return Result{}, err
@@ -144,6 +156,6 @@ func NewClaudeCLI(cfg ClaudeCLIConfig, lim Limits) prizm.Processor {
 			TotalTokens:  out.Usage.InputTokens + out.Usage.OutputTokens,
 			Truncated:    truncated,
 		}
-		return Result{Output: out.Result, Engine: KindClaudeCLI, Model: model, Usage: u, Context: items}, nil
+		return Result{Output: out.Result, Engine: KindClaudeCLI, Model: model, Effort: effort, Usage: u, Context: items}, nil
 	})
 }

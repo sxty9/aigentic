@@ -13,7 +13,7 @@ import {
 } from '@holistic/ui';
 import type { Info, SecretStatus } from './types';
 import { ConnectAiPanel } from './ConnectAiPanel';
-import { ChatView } from './ChatView';
+import { ChatTab } from './ChatTab';
 
 // The aigentic tab is the user's AI surface: a full chat (pick a model or let Auto choose),
 // plus per-user self-service to link THEIR OWN Claude (no admin bears the token load). Admins
@@ -43,7 +43,7 @@ export function Dashboard({ user, api, apiFor, ui }: ServiceContextProps) {
         </Stack>
 
         {view === 'chat' ? (
-          <ChatView api={api} apiFor={apiFor} ui={ui} />
+          <ChatTab api={api} apiFor={apiFor} ui={ui} />
         ) : (
           <ConnectView api={api} ui={ui} isAdmin={user.isAdmin} />
         )}

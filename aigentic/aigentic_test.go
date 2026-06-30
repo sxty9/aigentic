@@ -543,6 +543,40 @@ func TestClaudeCLIPerUser(t *testing.T) {
 	}
 }
 
+// claude-cli forwards reasoning effort as the CLI's --effort flag; an unknown level is a 400
+// (caught before exec), and the applied level is echoed back on the Result.
+func TestClaudeCLIEffort(t *testing.T) {
+	var gotArgs []string
+	capRun := func(_ context.Context, _ string, args []string, _ string, _ []string) ([]byte, error) {
+		gotArgs = args
+		return json.Marshal(map[string]any{"type": "result", "result": "ok", "is_error": false, "usage": map[string]int{"input_tokens": 1, "output_tokens": 1}})
+	}
+
+	reg := newReg(t, Config{ClaudeCLI: ClaudeCLIConfig{Run: capRun}})
+	out := mustRoute(t, reg, KindClaudeCLI, Request{Prompt: "hi", Claude: &ClaudeOptions{Effort: "high"}})
+	if out.Effort != "high" {
+		t.Fatalf("result effort=%q want high", out.Effort)
+	}
+	if !argPair(gotArgs, "--effort", "high") {
+		t.Fatalf("--effort high not passed: %v", gotArgs)
+	}
+
+	reg = newReg(t, Config{ClaudeCLI: ClaudeCLIConfig{Run: capRun}})
+	if _, err := route(reg, KindClaudeCLI, Request{Prompt: "hi", Claude: &ClaudeOptions{Effort: "bogus"}}); !errors.Is(err, prizm.ErrInvalidRequest) {
+		t.Fatalf("bad effort: err=%v want ErrInvalidRequest", err)
+	}
+}
+
+// argPair reports whether args contains the consecutive pair flag, val.
+func argPair(args []string, flag, val string) bool {
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == flag && args[i+1] == val {
+			return true
+		}
+	}
+	return false
+}
+
 // With no static key and KeyFunc reporting none, the leaf is unavailable (not a crash) — so
 // choose's availability fallback still applies.
 func TestClaudeAPIUnavailableWithoutKey(t *testing.T) {

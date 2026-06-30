@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
+import { useEffect, useState, type KeyboardEvent } from 'react';
 import {
   Badge,
   Box,
@@ -10,60 +10,34 @@ import {
   Stack,
   Text,
   Textarea,
+  type ServiceApiClient,
   type ServiceContextProps,
 } from '@holistic/ui';
-import { EnginePicker, pickerFields, usePicker } from './EnginePicker';
-import { CHAT_SEED_KEY, type AigenticRequest, type ChatSeed, type RunResponse } from './types';
+import { EnginePicker, pickerFields, type Picker } from './EnginePicker';
+import { clean, type Msg } from './chatStore';
+import type { AigenticRequest, RunResponse } from './types';
 
-interface Msg {
-  role: 'user' | 'assistant';
-  content: string;
-  engine?: string;
-  model?: string;
-}
-
-// clean strips the leading "Assistant:" the transcript framing can echo, plus any file-context
-// tags carried over from a seeded handoff.
-function clean(s: string): string {
-  return s
-    .replace(/^\s*Assistant:\s*/i, '')
-    .replace(/<\/?(file|attachment)\b[^>]*>/g, '')
-    .trim();
-}
-
-// ChatView is the aigentic tab's conversational surface (Perplexity-style): pick an engine /
-// model (or Auto) and chat. Multi-turn is stateless on the backend — the whole conversation is
-// sent as one transcript prompt to /run, so the chat inherits the per-user credentials, the
-// Auto router and multimodal for free. A "continue in chat" handoff from the Files "Ask AI"
-// dialog seeds the first exchange via localStorage.
-export function ChatView({ api, apiFor, ui }: Pick<ServiceContextProps, 'api' | 'apiFor' | 'ui'>) {
-  const picker = usePicker(apiFor);
-  const [messages, setMessages] = useState<Msg[]>([]);
+// ChatView is the conversation pane for one chat. It is controlled: the message list lives in the
+// chat store (so it persists + drives the sidebar), and the picker is owned by the parent (so the
+// engine choice survives switching chats). Multi-turn is stateless on the backend — the whole
+// conversation is sent as one transcript prompt to /run, inheriting per-user creds, Auto routing
+// and multimodal for free.
+export function ChatView({
+  api,
+  ui,
+  picker,
+  messages,
+  onMessages,
+}: {
+  api: ServiceApiClient;
+  ui: ServiceContextProps['ui'];
+  picker: Picker;
+  messages: Msg[];
+  onMessages: (m: Msg[]) => void;
+}) {
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
-  const seeded = useRef(false);
 
-  // Pick up a "continue in chat" handoff from the Files app (once), then clear it.
-  useEffect(() => {
-    if (seeded.current) return;
-    seeded.current = true;
-    try {
-      const raw = localStorage.getItem(CHAT_SEED_KEY);
-      if (!raw) return;
-      localStorage.removeItem(CHAT_SEED_KEY);
-      const seed = JSON.parse(raw) as ChatSeed;
-      if (seed?.prompt || seed?.answer) {
-        setMessages([
-          { role: 'user', content: seed.prompt || '(files)' },
-          { role: 'assistant', content: clean(seed.answer || ''), engine: seed.engine, model: seed.model },
-        ]);
-      }
-    } catch {
-      // malformed seed — ignore, start an empty chat
-    }
-  }, []);
-
-  // Keep the latest turn in view as the conversation grows.
   useEffect(() => {
     document.getElementById('aigentic-chat-end')?.scrollIntoView({ block: 'end', behavior: 'smooth' });
   }, [messages, busy]);
@@ -72,7 +46,7 @@ export function ChatView({ api, apiFor, ui }: Pick<ServiceContextProps, 'api' | 
     const text = input.trim();
     if (!text || busy) return;
     const next: Msg[] = [...messages, { role: 'user', content: text }];
-    setMessages(next);
+    onMessages(next);
     setInput('');
     setBusy(true);
     try {
@@ -80,7 +54,7 @@ export function ChatView({ api, apiFor, ui }: Pick<ServiceContextProps, 'api' | 
       const transcript = next.map((m) => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content}`).join('\n\n') + '\n\nAssistant:';
       const data: AigenticRequest = { prompt: transcript, ...pickerFields(picker) };
       const res = await api.post<RunResponse>('run', { header: { kind: picker.engine }, data });
-      setMessages((m) => [...m, { role: 'assistant', content: clean(res.data.output), engine: res.data.engine, model: res.data.model }]);
+      onMessages([...next, { role: 'assistant', content: clean(res.data.output), engine: res.data.engine, model: res.data.model }]);
     } catch (e) {
       ui.toast({ title: 'Chat failed', description: (e as Error).message, variant: 'error' });
     } finally {
@@ -96,17 +70,8 @@ export function ChatView({ api, apiFor, ui }: Pick<ServiceContextProps, 'api' | 
   }
 
   return (
-    <Stack gap={3}>
-      <Stack direction="row" align="center" justify="between">
-        <Text variant="subhead" weight="semibold">
-          Chat
-        </Text>
-        <Button size="sm" variant="ghost" disabled={!messages.length || busy} onClick={() => setMessages([])}>
-          New chat
-        </Button>
-      </Stack>
-
-      <ScrollArea className="max-h-[55vh] min-h-[28vh] pr-1">
+    <Stack gap={3} className="h-full">
+      <ScrollArea className="grow max-h-[55vh] min-h-[28vh] pr-1">
         {messages.length === 0 ? (
           <EmptyState title="Ask anything" description="Pick an engine below — Auto chooses for you — then start chatting." />
         ) : (
