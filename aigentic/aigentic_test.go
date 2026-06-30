@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/sxty9/prizm/graveyard"
@@ -463,6 +464,43 @@ func TestChooseFallsBackWhenOllamaErrors(t *testing.T) {
 	}
 	if got.Decision == nil || !got.Decision.Fallback {
 		t.Fatalf("expected decision.fallback=true, got %+v", got.Decision)
+	}
+}
+
+// Inline image/PDF files become image/document content blocks (before the text block); other
+// media is named in the prompt by the assembler but not sent as a block.
+func TestClaudeAPIMultimodal(t *testing.T) {
+	var body map[string]any
+	an := anthropicStubCapture("ok", &body)
+	defer an.Close()
+	reg := newReg(t, Config{ClaudeAPI: ClaudeAPIConfig{BaseURL: an.URL, APIKey: "k"}})
+	mustRoute(t, reg, KindClaudeAPI, Request{
+		Prompt: "describe",
+		Inline: []InlineFile{
+			{Path: "me/a.txt", Content: "hello text"},
+			{Path: "me/img.png", Content: "BASE64IMG", MediaType: "image/png"},
+			{Path: "me/doc.pdf", Content: "BASE64PDF", MediaType: "application/pdf"},
+		},
+	})
+	msgs, _ := body["messages"].([]any)
+	if len(msgs) == 0 {
+		t.Fatalf("no messages in body: %v", body)
+	}
+	content, ok := msgs[0].(map[string]any)["content"].([]any)
+	if !ok {
+		t.Fatalf("content is not a multimodal array: %T", msgs[0].(map[string]any)["content"])
+	}
+	types := map[string]int{}
+	for _, b := range content {
+		types[b.(map[string]any)["type"].(string)]++
+	}
+	if types["image"] != 1 || types["document"] != 1 || types["text"] != 1 {
+		t.Fatalf("block types = %v, want one each of image/document/text", types)
+	}
+	// The text block carries the prompt + the text file content (img/pdf only as blocks).
+	last := content[len(content)-1].(map[string]any)
+	if txt, _ := last["text"].(string); !strings.Contains(txt, "hello text") || !strings.Contains(txt, "describe") {
+		t.Fatalf("text block missing prompt/text-file content: %q", txt)
 	}
 }
 

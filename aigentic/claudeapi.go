@@ -6,9 +6,37 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/sxty9/prizm/prizm"
 )
+
+// claudeUserContent builds the user-message content for the Messages API: a plain string when
+// there are no media attachments, else an array of image/document blocks followed by the text
+// block (the API expects media blocks to precede the text). Image/PDF bytes ride in
+// InlineFile.Content as base64; other media types are ignored here (context.go already named
+// them in the prompt so the model knows they exist).
+func claudeUserContent(in Request, prompt string) any {
+	var blocks []map[string]any
+	for _, f := range in.Inline {
+		switch {
+		case strings.HasPrefix(f.MediaType, "image/"):
+			blocks = append(blocks, map[string]any{
+				"type":   "image",
+				"source": map[string]any{"type": "base64", "media_type": f.MediaType, "data": f.Content},
+			})
+		case f.MediaType == "application/pdf":
+			blocks = append(blocks, map[string]any{
+				"type":   "document",
+				"source": map[string]any{"type": "base64", "media_type": f.MediaType, "data": f.Content},
+			})
+		}
+	}
+	if len(blocks) == 0 {
+		return prompt
+	}
+	return append(blocks, map[string]any{"type": "text", "text": prompt})
+}
 
 // defaultClaudeModel is the claude-api leaf's default model. Sonnet 4.6 is the chosen
 // default (best speed/intelligence balance); override per-request via Request.Model or
@@ -82,7 +110,7 @@ func NewClaudeAPI(cfg ClaudeAPIConfig, lim Limits) prizm.Processor {
 			"model":      model,
 			"max_tokens": answerBudget(in, lim.MaxTokens),
 			"system":     defaultSystem,
-			"messages":   []map[string]any{{"role": "user", "content": prompt}},
+			"messages":   []map[string]any{{"role": "user", "content": claudeUserContent(in, prompt)}},
 		}
 		if effort != "" {
 			// Anthropic carries reasoning effort inside output_config, not top-level.

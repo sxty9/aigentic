@@ -14,11 +14,13 @@ export interface AigenticRequest {
   prompt: string;
   paths?: string[];
   // Caller-supplied file contents (no server fs access) — e.g. the Files app reads the user's
-  // private share and passes the bytes here. Same byte budget + binary filter as paths.
-  inline?: { path: string; content: string }[];
+  // private share and passes the bytes here. Text rides in `content`; images/PDFs ride as
+  // base64 in `content` with a `mediaType` (image/png, application/pdf, …).
+  inline?: { path: string; content: string; mediaType?: string }[];
   outputFormat?: string;
   model?: string;
   maxTokens?: number;
+  claude?: { effort?: string };
   choose?: { force?: string };
 }
 

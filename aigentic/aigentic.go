@@ -22,6 +22,7 @@ package aigentic
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/sxty9/prizm/graveyard"
 	"github.com/sxty9/prizm/prizm"
@@ -83,8 +84,14 @@ type Request struct {
 // user's confined fs access — hand aigentic the bytes, keeping the daemon unprivileged and
 // fs-free for the private Samba share.
 type InlineFile struct {
-	Path    string `json:"path"`    // display/provenance path (e.g. "me/Notes/spec.md"); never used for fs access
-	Content string `json:"content"` // the file's text content
+	Path      string `json:"path"`                // display/provenance path (e.g. "me/Notes/spec.md"); never used for fs access
+	Content   string `json:"content"`             // text content (mediaType empty/text), else base64-encoded bytes
+	MediaType string `json:"mediaType,omitempty"` // "" or "text/*" => text; "image/png|jpeg|gif|webp" => vision; "application/pdf" => document; anything else => listed as an attachment only (counted, not read)
+}
+
+// isText reports whether an inline file carries plain text (vs. base64 media).
+func (f InlineFile) isText() bool {
+	return f.MediaType == "" || strings.HasPrefix(f.MediaType, "text/")
 }
 
 // ClaudeOptions are the knobs specific to the Claude leaves (claude-api, claude-cli).

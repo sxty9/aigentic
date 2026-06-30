@@ -18,10 +18,11 @@ import (
 )
 
 const (
-	base    = "/api/services/aigentic/"
-	service = "aigentic"
-	version = "0.1.0"
-	maxBody = 1 << 20 // 1 MiB request cap
+	base       = "/api/services/aigentic/"
+	service    = "aigentic"
+	version    = "0.1.0"
+	maxBody    = 1 << 20  // 1 MiB request cap (credential endpoints)
+	maxRunBody = 32 << 20 // 32 MiB for /run — multimodal inline (base64 images/PDFs); Anthropic caps at 32 MB
 )
 
 // Server wires the session verifier, the processor registry and the admin-managed API-key
@@ -123,7 +124,7 @@ func (s *Server) info(w http.ResponseWriter, _ *http.Request, u *auth.User) {
 // Data), and routes. It never inspects Data.
 func (s *Server) run(w http.ResponseWriter, r *http.Request, u *auth.User) {
 	var req prizm.Request
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBody)).Decode(&req); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxRunBody)).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}

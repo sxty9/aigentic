@@ -65,6 +65,13 @@ func assemble(ctx context.Context, env prizm.Env, in Request, lim Limits) (promp
 	// Inline files: caller-supplied bytes (no fs access). Same budget + binary filter as
 	// Paths, and stored in the graveyard for identical provenance.
 	for _, f := range in.Inline {
+		if !f.isText() {
+			// Non-text media (image/pdf/other): a vision-capable leaf (claude-api) attaches it
+			// as a content block; here we only NAME it so text-only engines still account for it.
+			fmt.Fprintf(&b, "<attachment path=%q type=%q/>\n", f.Path, f.MediaType)
+			items = append(items, ContextItem{Path: f.Path, Skipped: "attachment"})
+			continue
+		}
 		data := []byte(f.Content)
 		skip := ""
 		switch {
