@@ -9,11 +9,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"time"
 
 	"github.com/sxty9/aigentic/aigentic"
 	"github.com/sxty9/aigentic/backend/internal/auth"
+	"github.com/sxty9/aigentic/backend/internal/chatstore"
 	"github.com/sxty9/aigentic/backend/internal/rights"
 	secretstore "github.com/sxty9/aigentic/backend/internal/secret"
 	"github.com/sxty9/prizm/prizm"
@@ -34,12 +36,14 @@ type Server struct {
 	reg          *prizm.Registry
 	sec          *secretstore.Store                      // admin-managed Anthropic key; nil disables the secret endpoints
 	ollamaModels func(context.Context) ([]string, error) // lists local ollama models for the picker; nil => none
+	chats        *chatstore.Store                        // per-user chat history; nil disables the /chats endpoints
 }
 
 // New builds a server. sec may be nil (the /secret endpoints then report 503); ollamaModels may
-// be nil (the /models endpoint then returns no local models).
-func New(v *auth.Verifier, reg *prizm.Registry, sec *secretstore.Store, ollamaModels func(context.Context) ([]string, error)) *Server {
-	return &Server{v: v, reg: reg, sec: sec, ollamaModels: ollamaModels}
+// be nil (the /models endpoint then returns no local models); chats may be nil (the /chats
+// endpoints then report empty / 503).
+func New(v *auth.Verifier, reg *prizm.Registry, sec *secretstore.Store, ollamaModels func(context.Context) ([]string, error), chats *chatstore.Store) *Server {
+	return &Server{v: v, reg: reg, sec: sec, ollamaModels: ollamaModels, chats: chats}
 }
 
 type handler func(w http.ResponseWriter, r *http.Request, u *auth.User)
@@ -66,6 +70,10 @@ func (s *Server) Handler() http.Handler {
 	// Available models per engine (for the Files "Ask AI" picker): static Claude list + the
 	// locally-pulled ollama models. Names aren't sensitive; gate on the run right.
 	mux.HandleFunc("GET "+base+"models", s.guard(rights.GroupRun, false, s.modelsList))
+	// Per-user chat history, keyed server-side by the holistic account (so chats follow the
+	// user across devices). GET reads the blob; PUT replaces it (CSRF on the write).
+	mux.HandleFunc("GET "+base+"chats", s.guard(rights.GroupRun, false, s.chatsGet))
+	mux.HandleFunc("PUT "+base+"chats", s.guard(rights.GroupRun, true, s.chatsPut))
 	mux.HandleFunc("GET "+base+"health", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 	})
@@ -317,6 +325,47 @@ func (s *Server) modelsList(w http.ResponseWriter, r *http.Request, _ *auth.User
 		}
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// chatsGet returns the requesting user's stored chat history (an opaque JSON array). The subject
+// is server-authoritative — a user can only ever read their OWN chats.
+func (s *Server) chatsGet(w http.ResponseWriter, _ *http.Request, u *auth.User) {
+	if s.chats == nil {
+		writeJSON(w, http.StatusOK, []any{})
+		return
+	}
+	b, err := s.chats.Load(u.Username)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "Could not load chats")
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(b)
+}
+
+// chatsPut replaces the requesting user's chat history with the request body (a JSON array). The
+// body is stored opaquely; only its shape (a JSON array) and size are validated.
+func (s *Server) chatsPut(w http.ResponseWriter, r *http.Request, u *auth.User) {
+	if s.chats == nil {
+		writeErr(w, http.StatusServiceUnavailable, "Chat storage not configured")
+		return
+	}
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, chatstore.MaxBytes+1))
+	if err != nil {
+		writeErr(w, http.StatusRequestEntityTooLarge, "Chat history too large")
+		return
+	}
+	switch err := s.chats.Save(u.Username, body); {
+	case errors.Is(err, chatstore.ErrBadJSON):
+		writeErr(w, http.StatusBadRequest, "Invalid chat data")
+	case errors.Is(err, chatstore.ErrTooLarge):
+		writeErr(w, http.StatusRequestEntityTooLarge, "Chat history too large")
+	case err != nil:
+		writeErr(w, http.StatusInternalServerError, "Could not save chats")
+	default:
+		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	}
 }
 
 // paidKind reports whether a kind can reach the metered Anthropic API.

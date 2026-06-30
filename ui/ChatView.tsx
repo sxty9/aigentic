@@ -1,4 +1,4 @@
-import { useEffect, useState, type KeyboardEvent } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from 'react';
 import {
   Badge,
   Box,
@@ -17,18 +17,26 @@ import { EnginePicker, pickerFields, type Picker } from './EnginePicker';
 import { clean, type Msg } from './chatStore';
 import type { AigenticRequest, RunResponse } from './types';
 
+// Per-chat scroll memory (session-scoped, keyed by chat id): returning to a chat restores where
+// you last were, while a new message jumps to the bottom.
+const scrollMem = new Map<string, number>();
+const SCROLL_ID = 'aigentic-chat-scroll';
+const scrollEl = () => document.getElementById(SCROLL_ID);
+
 // ChatView is the conversation pane for one chat. It is controlled: the message list lives in the
 // chat store (so it persists + drives the sidebar), and the picker is owned by the parent (so the
 // engine choice survives switching chats). Multi-turn is stateless on the backend — the whole
 // conversation is sent as one transcript prompt to /run, inheriting per-user creds, Auto routing
 // and multimodal for free.
 export function ChatView({
+  chatId,
   api,
   ui,
   picker,
   messages,
   onMessages,
 }: {
+  chatId: string;
   api: ServiceApiClient;
   ui: ServiceContextProps['ui'];
   picker: Picker;
@@ -37,10 +45,36 @@ export function ChatView({
 }) {
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
+  const prevLen = useRef(messages.length);
 
+  // On open/switch: restore the chat's last scroll position, else start at the bottom.
+  useLayoutEffect(() => {
+    const el = scrollEl();
+    if (!el) return;
+    const saved = scrollMem.get(chatId);
+    el.scrollTop = saved != null ? saved : el.scrollHeight;
+    prevLen.current = messages.length;
+  }, [chatId]);
+
+  // A new message (sent or received) jumps to the bottom.
   useEffect(() => {
-    document.getElementById('aigentic-chat-end')?.scrollIntoView({ block: 'end', behavior: 'smooth' });
-  }, [messages, busy]);
+    const el = scrollEl();
+    if (el && messages.length > prevLen.current) el.scrollTop = el.scrollHeight;
+    prevLen.current = messages.length;
+  }, [messages]);
+
+  // Keep the "Thinking…" row in view while a reply is pending.
+  useEffect(() => {
+    if (busy) {
+      const el = scrollEl();
+      if (el) el.scrollTop = el.scrollHeight;
+    }
+  }, [busy]);
+
+  function saveScroll() {
+    const el = scrollEl();
+    if (el) scrollMem.set(chatId, el.scrollTop);
+  }
 
   async function send() {
     const text = input.trim();
@@ -71,7 +105,7 @@ export function ChatView({
 
   return (
     <Stack gap={3} className="h-full">
-      <ScrollArea className="grow max-h-[55vh] min-h-[28vh] pr-1">
+      <ScrollArea id={SCROLL_ID} onScroll={saveScroll} className="grow max-h-[55vh] min-h-[28vh] pr-1">
         {messages.length === 0 ? (
           <EmptyState title="Ask anything" description="Pick an engine below — Auto chooses for you — then start chatting." />
         ) : (
@@ -105,7 +139,6 @@ export function ChatView({
             </Text>
           </Stack>
         )}
-        <Box id="aigentic-chat-end" />
       </ScrollArea>
 
       <Stack gap={2}>

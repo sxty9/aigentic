@@ -68,7 +68,7 @@ func newServer(t *testing.T, adminGroup, ollamaURL string) *Server {
 	}
 	td := t.TempDir()
 	store := secretstore.New(filepath.Join(td, "anthropic.key"), filepath.Join(td, "users"), "")
-	return New(auth.NewVerifier(secret, adminGroup), reg, store, nil)
+	return New(auth.NewVerifier(secret, adminGroup), reg, store, nil, nil)
 }
 
 func do(t *testing.T, s *Server, method, path string, body []byte, access, csrf string) *httptest.ResponseRecorder {

@@ -25,6 +25,7 @@ import (
 	"github.com/sxty9/aigentic/aigentic"
 	"github.com/sxty9/aigentic/backend/internal/api"
 	"github.com/sxty9/aigentic/backend/internal/auth"
+	"github.com/sxty9/aigentic/backend/internal/chatstore"
 	"github.com/sxty9/aigentic/backend/internal/grave"
 	secretstore "github.com/sxty9/aigentic/backend/internal/secret"
 	"github.com/sxty9/prizm/prizm"
@@ -58,10 +59,13 @@ func main() {
 		log.Fatalf("aigenticd: %v", err)
 	}
 
+	// Per-user chat history shares the per-user state root (same StateDirectory/users/<user>/).
+	chats := chatstore.New(usersDir())
+
 	srv := &http.Server{
 		Handler: api.New(v, reg, sec, func(ctx context.Context) ([]string, error) {
 			return aigentic.OllamaModels(ctx, ollamaConfig())
-		}).Handler(),
+		}, chats).Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 

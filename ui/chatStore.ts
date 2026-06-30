@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { ServiceApiClient } from '@holistic/ui';
 import { CHAT_SEED_KEY, type ChatSeed } from './types';
 
 export interface Msg {
@@ -15,27 +16,9 @@ export interface Chat {
   updatedAt: number;
 }
 
-// Chats persist per-device in localStorage (no backend, no cross-device sync yet — a deliberate
-// v1 choice; the hook is the single seam to swap in a server store later).
-const STORE_KEY = 'aigentic.chats.v1';
-
-function load(): Chat[] {
-  try {
-    const raw = localStorage.getItem(STORE_KEY);
-    const v = raw ? (JSON.parse(raw) as Chat[]) : [];
-    return Array.isArray(v) ? v : [];
-  } catch {
-    return [];
-  }
-}
-
-function persist(chats: Chat[]) {
-  try {
-    localStorage.setItem(STORE_KEY, JSON.stringify(chats));
-  } catch {
-    // quota / private mode — chats just won't survive a reload
-  }
-}
+// Chats are stored SERVER-SIDE per holistic account (GET/PUT /chats), so they follow the user
+// across devices. This hook loads them on mount and writes the whole list back (debounced) on
+// change. The cross-tab handoff seed still rides localStorage (a transient same-device baton).
 
 function newId(): string {
   try {
@@ -62,7 +45,24 @@ export function clean(s: string): string {
     .trim();
 }
 
+function seedMessages(): Msg[] | null {
+  try {
+    const raw = localStorage.getItem(CHAT_SEED_KEY);
+    if (!raw) return null;
+    localStorage.removeItem(CHAT_SEED_KEY);
+    const s = JSON.parse(raw) as ChatSeed;
+    if (!s?.prompt && !s?.answer) return null;
+    return [
+      { role: 'user', content: s.prompt || '(files)' },
+      { role: 'assistant', content: clean(s.answer || ''), engine: s.engine, model: s.model },
+    ];
+  } catch {
+    return null;
+  }
+}
+
 export interface ChatStore {
+  loading: boolean;
   chats: Chat[];
   active: Chat | null;
   activeId: string;
@@ -75,18 +75,79 @@ export interface ChatStore {
   setActiveMessages: (msgs: Msg[]) => void;
 }
 
-// useChats owns the chat list + the active selection, persisting to localStorage. On first mount
-// it adopts a "continue in chat" handoff seed (from the Files dialog) as a fresh chat, else it
-// ensures one empty chat exists so the composer always has somewhere to write.
-export function useChats(): ChatStore {
-  const [chats, setChats] = useState<Chat[]>(() => load());
-  const [activeId, setActiveId] = useState<string>(() => load()[0]?.id ?? '');
+export function useChats(api: ServiceApiClient): ChatStore {
+  const [chats, setChats] = useState<Chat[]>([]);
+  const [activeId, setActiveId] = useState<string>('');
   const [search, setSearch] = useState('');
-  const initialized = useRef(false);
+  const [loading, setLoading] = useState(true);
 
+  const initialized = useRef(false);
+  const apiRef = useRef(api);
+  apiRef.current = api;
+  const latest = useRef<Chat[]>([]);
+  latest.current = chats;
+  const dirty = useRef(false);
+
+  // Load from the server once, then adopt a handoff seed (fresh chat) or ensure one empty chat
+  // exists so the composer always has somewhere to write.
   useEffect(() => {
-    persist(chats);
-  }, [chats]);
+    if (initialized.current) return;
+    initialized.current = true;
+    let cancelled = false;
+    (async () => {
+      let loaded: Chat[] = [];
+      try {
+        const got = await api.get<Chat[]>('chats');
+        if (Array.isArray(got)) loaded = got;
+      } catch {
+        // no stored chats / offline — start fresh
+      }
+      if (cancelled) return;
+      const seed = seedMessages();
+      let next = loaded;
+      let active = loaded[0]?.id ?? '';
+      if (seed) {
+        const c: Chat = { id: newId(), title: titleOf(seed), messages: seed, updatedAt: Date.now() };
+        next = [c, ...loaded];
+        active = c.id;
+      } else if (loaded.length === 0) {
+        const c: Chat = { id: newId(), title: 'New chat', messages: [], updatedAt: Date.now() };
+        next = [c];
+        active = c.id;
+      }
+      setChats(next);
+      setActiveId(active);
+      setLoading(false);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [api]);
+
+  // Persist the whole list (debounced) on change; flush a pending write on unmount.
+  useEffect(() => {
+    if (loading) return;
+    dirty.current = true;
+    const t = window.setTimeout(() => {
+      const snapshot = latest.current;
+      apiRef.current
+        .put('chats', snapshot)
+        .then(() => {
+          dirty.current = false;
+        })
+        .catch(() => {
+          /* keep dirty; a later change (or unmount flush) retries */
+        });
+    }, 500);
+    return () => window.clearTimeout(t);
+  }, [chats, loading]);
+
+  useEffect(
+    () => () => {
+      if (dirty.current) void apiRef.current.put('chats', latest.current).catch(() => {});
+    },
+    [],
+  );
 
   const selectChat = useCallback((id: string) => setActiveId(id), []);
 
@@ -113,43 +174,6 @@ export function useChats(): ChatStore {
     [activeId],
   );
 
-  // One-time bootstrap: seed handoff, or guarantee a live chat to type into.
-  useEffect(() => {
-    if (initialized.current) return;
-    initialized.current = true;
-    let seedMsgs: Msg[] | null = null;
-    try {
-      const raw = localStorage.getItem(CHAT_SEED_KEY);
-      if (raw) {
-        localStorage.removeItem(CHAT_SEED_KEY);
-        const s = JSON.parse(raw) as ChatSeed;
-        if (s?.prompt || s?.answer) {
-          seedMsgs = [
-            { role: 'user', content: s.prompt || '(files)' },
-            { role: 'assistant', content: clean(s.answer || ''), engine: s.engine, model: s.model },
-          ];
-        }
-      }
-    } catch {
-      // ignore a malformed seed
-    }
-    if (seedMsgs) {
-      const c: Chat = { id: newId(), title: titleOf(seedMsgs), messages: seedMsgs, updatedAt: Date.now() };
-      setChats((prev) => [c, ...prev]);
-      setActiveId(c.id);
-    } else {
-      setChats((prev) => {
-        if (prev.length > 0) {
-          setActiveId((cur) => cur || prev[0].id);
-          return prev;
-        }
-        const c: Chat = { id: newId(), title: 'New chat', messages: [], updatedAt: Date.now() };
-        setActiveId(c.id);
-        return [c];
-      });
-    }
-  }, []);
-
   const active = chats.find((c) => c.id === activeId) ?? null;
 
   const filtered = useMemo(() => {
@@ -161,5 +185,5 @@ export function useChats(): ChatStore {
     );
   }, [chats, search]);
 
-  return { chats, active, activeId, search, setSearch, filtered, newChat, selectChat, deleteChat, setActiveMessages };
+  return { loading, chats, active, activeId, search, setSearch, filtered, newChat, selectChat, deleteChat, setActiveMessages };
 }
