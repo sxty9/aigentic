@@ -40,6 +40,26 @@ export interface RunResponse {
   data: Result;
 }
 
+// Models the Ask AI / chat picker can offer per engine (GET /models): a static Claude list
+// (used by claude-cli + claude-api) and the locally-pulled ollama models (used by the local
+// engine). ollama is empty when the daemon can't reach it.
+export interface ModelCatalog {
+  claude: { id: string; label: string }[];
+  ollama: string[];
+}
+
+// Handoff from the Files "Ask AI" dialog to the full aigentic chat tab: the answer is dropped
+// in localStorage under CHAT_SEED_KEY, then the dashboard switches to aigentic and a new chat
+// opens pre-seeded with this exchange. Kept text-only (no bulky inline blobs) so it fits.
+export const CHAT_SEED_KEY = 'aigentic.chat.seed';
+export interface ChatSeed {
+  prompt: string;
+  answer: string;
+  engine?: string;
+  model?: string;
+  folder?: string;
+}
+
 // Non-secret status of an Anthropic API key (global /secret or per-user /mykey). The key value
 // never crosses back; only a masked hint (sk-ant-…last4) and its source ('user' = the caller's
 // own, 'store' = the shared/admin key, 'env' = the bootstrap).

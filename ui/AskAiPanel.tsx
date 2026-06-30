@@ -1,10 +1,9 @@
-import { useMemo, useState, type ReactNode } from 'react';
+import { useMemo, useState } from 'react';
 import {
   Badge,
   Button,
-  CodeBlock,
+  Markdown,
   Panel,
-  SegmentedControl,
   Stack,
   Text,
   Textarea,
@@ -13,7 +12,8 @@ import {
   type ServiceApiClient,
   type TextPayload,
 } from '@holistic/ui';
-import type { AigenticRequest, RunResponse } from './types';
+import { EnginePicker, pickerFields, usePicker } from './EnginePicker';
+import { CHAT_SEED_KEY, type AigenticRequest, type ChatSeed, type RunResponse } from './types';
 
 // Bound the payload: Anthropic caps a request at ~32 MB; keep well under it and under a sane
 // file count so a huge folder doesn't stall the browser.
@@ -21,27 +21,6 @@ const MAX_FILES = 50;
 const MAX_TOTAL_BYTES = 25 * 1024 * 1024;
 
 const q = (p: string) => encodeURIComponent(p);
-
-// --- providers / models / effort (the picker) ---------------------------------------------
-const PROVIDERS = [
-  { value: 'choose', label: 'Auto' },
-  { value: 'ollama', label: 'Local' },
-  { value: 'claude-cli', label: 'Claude CLI' },
-  { value: 'claude-api', label: 'Claude API' },
-] as const;
-const CLAUDE_MODELS = [
-  { value: '', label: 'Default' },
-  { value: 'claude-sonnet-4-6', label: 'Sonnet' },
-  { value: 'claude-opus-4-8', label: 'Opus' },
-  { value: 'claude-haiku-4-5', label: 'Haiku' },
-] as const;
-const EFFORTS = [
-  { value: '', label: 'Default' },
-  { value: 'low', label: 'Low' },
-  { value: 'medium', label: 'Med' },
-  { value: 'high', label: 'High' },
-] as const;
-const usesClaude = (p: string) => p === 'claude-cli' || p === 'claude-api' || p === 'choose';
 
 // --- gather the folder's files (recursing folders), as inline parts ------------------------
 
@@ -101,210 +80,18 @@ async function toInline(api: ServiceApiClient, e: FileEntry): Promise<InlinePart
   }
 }
 
-// --- minimal Markdown renderer (no raw HTML; @holistic/ui primitives only) -----------------
+// cleanOutput strips the context tags the backend wraps files in, before rendering.
 function cleanOutput(s: string): string {
   return s
     .replace(/<\/?(file|attachment)\b[^>]*>/g, '')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
 }
-type Block =
-  | { kind: 'code'; code: string }
-  | { kind: 'heading'; level: number; text: string }
-  | { kind: 'list'; items: string[] }
-  | { kind: 'quote'; text: string }
-  | { kind: 'math'; tex: string }
-  | { kind: 'para'; text: string };
-const LIST_RE = /^\s*([-*•]|\d+[.)])\s+/;
-const HEAD_RE = /^(#{1,4})\s+(.*)$/;
-const MATH_LINE_RE = /^\s*\$\$([\s\S]+?)\$\$\s*$/;
-
-const GREEK: Record<string, string> = {
-  alpha: 'α', beta: 'β', gamma: 'γ', delta: 'δ', epsilon: 'ε', theta: 'θ', lambda: 'λ',
-  mu: 'μ', pi: 'π', rho: 'ρ', sigma: 'σ', tau: 'τ', phi: 'φ', omega: 'ω', Delta: 'Δ', Sigma: 'Σ', Omega: 'Ω',
-};
-
-// texToPlain renders common LaTeX as readable Unicode (we ship no math typesetter): \frac and
-// \sqrt become inline forms, operators/greek map to symbols, and unknown commands + braces are
-// stripped. Best-effort, but far cleaner than raw "$$\frac{d}{v \cdot c}$$".
-function texToPlain(s: string): string {
-  let out = s;
-  for (let i = 0; i < 3; i++) out = out.replace(/\\frac\s*\{([^{}]*)\}\s*\{([^{}]*)\}/g, '($1)/($2)');
-  return out
-    .replace(/\\sqrt\s*\{([^{}]*)\}/g, '√($1)')
-    .replace(/\\cdot/g, '·')
-    .replace(/\\times/g, '×')
-    .replace(/\\div/g, '÷')
-    .replace(/\\pm/g, '±')
-    .replace(/\\leq?\b/g, '≤')
-    .replace(/\\geq?\b/g, '≥')
-    .replace(/\\neq/g, '≠')
-    .replace(/\\approx/g, '≈')
-    .replace(/\\infty/g, '∞')
-    .replace(/\\(Delta|Sigma|Omega|alpha|beta|gamma|delta|epsilon|theta|lambda|mu|pi|rho|sigma|tau|phi|omega)\b/g, (_, g: string) => GREEK[g] ?? g)
-    .replace(/\\[a-zA-Z]+\s*/g, ' ')
-    .replace(/[{}]/g, '')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-function parseBlocks(src: string): Block[] {
-  const lines = src.split('\n');
-  const blocks: Block[] = [];
-  let i = 0;
-  while (i < lines.length) {
-    const line = lines[i];
-    if (line.trim().startsWith('```')) {
-      const buf: string[] = [];
-      i++;
-      while (i < lines.length && !lines[i].trim().startsWith('```')) {
-        buf.push(lines[i]);
-        i++;
-      }
-      i++;
-      blocks.push({ kind: 'code', code: buf.join('\n') });
-      continue;
-    }
-    const ml = MATH_LINE_RE.exec(line);
-    if (ml) {
-      blocks.push({ kind: 'math', tex: ml[1].trim() });
-      i++;
-      continue;
-    }
-    if (line.trim().startsWith('>')) {
-      const buf: string[] = [];
-      while (i < lines.length && lines[i].trim().startsWith('>')) {
-        buf.push(lines[i].replace(/^\s*>\s?/, ''));
-        i++;
-      }
-      blocks.push({ kind: 'quote', text: buf.join(' ') });
-      continue;
-    }
-    const h = HEAD_RE.exec(line);
-    if (h) {
-      blocks.push({ kind: 'heading', level: h[1].length, text: h[2] });
-      i++;
-      continue;
-    }
-    if (LIST_RE.test(line)) {
-      const items: string[] = [];
-      while (i < lines.length && LIST_RE.test(lines[i])) {
-        items.push(lines[i].replace(LIST_RE, ''));
-        i++;
-      }
-      blocks.push({ kind: 'list', items });
-      continue;
-    }
-    if (line.trim() === '') {
-      i++;
-      continue;
-    }
-    const buf: string[] = [];
-    while (i < lines.length && lines[i].trim() !== '' && !HEAD_RE.test(lines[i]) && !LIST_RE.test(lines[i]) && !lines[i].trim().startsWith('```')) {
-      buf.push(lines[i]);
-      i++;
-    }
-    blocks.push({ kind: 'para', text: buf.join(' ') });
-  }
-  return blocks;
-}
-function inline(s: string): ReactNode[] {
-  const out: ReactNode[] = [];
-  // bold (**…**) | italic (*…*) | inline code (`…`) | inline math ($…$)
-  const re = /(\*\*([^*]+)\*\*|\*([^*\n]+)\*|`([^`]+)`|\$([^$\n]+)\$)/g;
-  let last = 0;
-  let key = 0;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(s)) !== null) {
-    if (m.index > last) out.push(s.slice(last, m.index));
-    if (m[2] != null) {
-      out.push(
-        <Text key={key++} as="span" weight="semibold">
-          {m[2]}
-        </Text>,
-      );
-    } else if (m[3] != null) {
-      out.push(
-        <Text key={key++} as="span" className="italic">
-          {m[3]}
-        </Text>,
-      );
-    } else if (m[4] != null) {
-      out.push(
-        <Text key={key++} as="code" className="rounded bg-fill/20 px-1 py-0.5 font-mono text-footnote">
-          {m[4]}
-        </Text>,
-      );
-    } else {
-      out.push(
-        <Text key={key++} as="span" className="font-mono">
-          {texToPlain(m[5])}
-        </Text>,
-      );
-    }
-    last = m.index + m[0].length;
-  }
-  if (last < s.length) out.push(s.slice(last));
-  return out;
-}
-function Markdown({ text }: { text: string }) {
-  const blocks = useMemo(() => parseBlocks(text), [text]);
-  return (
-    <Stack gap={2}>
-      {blocks.map((b, i) => {
-        if (b.kind === 'code') return <CodeBlock key={i} code={b.code} />;
-        if (b.kind === 'heading') {
-          return (
-            <Text key={i} variant={b.level === 1 ? 'title3' : b.level === 2 ? 'subhead' : 'body'} weight="semibold">
-              {inline(b.text)}
-            </Text>
-          );
-        }
-        if (b.kind === 'list') {
-          return (
-            <Stack key={i} gap={1}>
-              {b.items.map((it, j) => (
-                <Text key={j} className="leading-relaxed">
-                  <Text as="span" color="secondary">
-                    {'•  '}
-                  </Text>
-                  {inline(it)}
-                </Text>
-              ))}
-            </Stack>
-          );
-        }
-        if (b.kind === 'quote') {
-          return (
-            <Stack key={i} className="border-l-2 border-separator pl-3">
-              <Text color="secondary" className="italic leading-relaxed">
-                {inline(b.text)}
-              </Text>
-            </Stack>
-          );
-        }
-        if (b.kind === 'math') {
-          return (
-            <Stack key={i} align="center" className="rounded bg-fill/10 px-3 py-2">
-              <Text className="font-mono">{texToPlain(b.tex)}</Text>
-            </Stack>
-          );
-        }
-        return (
-          <Text key={i} className="leading-relaxed">
-            {inline(b.text)}
-          </Text>
-        );
-      })}
-    </Stack>
-  );
-}
 
 // --- the panel -----------------------------------------------------------------------------
-export function AskAiPanel({ cwd, entries, selection, api, apiFor, ui, close }: FolderActionContext) {
+export function AskAiPanel({ cwd, entries, selection, api, apiFor, ui, openService, close }: FolderActionContext) {
   const [prompt, setPrompt] = useState('Summarize these files.');
-  const [provider, setProvider] = useState<string>('choose');
-  const [model, setModel] = useState<string>('');
-  const [effort, setEffort] = useState<string>('');
+  const picker = usePicker(apiFor);
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState('');
   const [result, setResult] = useState<RunResponse['data'] | null>(null);
@@ -339,10 +126,8 @@ export function AskAiPanel({ cwd, entries, selection, api, apiFor, ui, close }: 
         return;
       }
       setNote(`Sending ${read} file${read === 1 ? '' : 's'} (${inlineFiles.length} total) to the AI…`);
-      const data: AigenticRequest = { prompt, inline: inlineFiles };
-      if (model) data.model = model;
-      if (effort) data.claude = { effort };
-      const res = await apiFor('aigentic').post<RunResponse>('run', { header: { kind: provider }, data });
+      const data: AigenticRequest = { prompt, inline: inlineFiles, ...pickerFields(picker) };
+      const res = await apiFor('aigentic').post<RunResponse>('run', { header: { kind: picker.engine }, data });
       setResult(res.data);
     } catch (e) {
       ui.toast({ title: 'AI request failed', description: (e as Error).message, variant: 'error' });
@@ -350,6 +135,19 @@ export function AskAiPanel({ cwd, entries, selection, api, apiFor, ui, close }: 
       setBusy(false);
       setNote('');
     }
+  }
+
+  // Hand the exchange off to the full aigentic chat tab, where it continues as a conversation.
+  function continueInChat() {
+    if (!result) return;
+    const seed: ChatSeed = { prompt, answer, engine: result.engine, model: result.model, folder: cwd };
+    try {
+      localStorage.setItem(CHAT_SEED_KEY, JSON.stringify(seed));
+    } catch {
+      // localStorage unavailable (private mode / quota) — fall back to opening an empty chat.
+    }
+    openService('aigentic');
+    close();
   }
 
   return (
@@ -361,30 +159,7 @@ export function AskAiPanel({ cwd, entries, selection, api, apiFor, ui, close }: 
 
       <Textarea value={prompt} onChange={(e) => setPrompt(e.target.value)} rows={3} placeholder="Ask the AI about these files…" />
 
-      <Stack direction="row" gap={3} align="center" className="flex-wrap">
-        <Stack gap={1}>
-          <Text variant="caption" color="tertiary">
-            Engine
-          </Text>
-          <SegmentedControl value={provider} onChange={setProvider} options={PROVIDERS.map((p) => ({ value: p.value, label: p.label }))} />
-        </Stack>
-        {usesClaude(provider) && (
-          <Stack gap={1}>
-            <Text variant="caption" color="tertiary">
-              Model
-            </Text>
-            <SegmentedControl value={model} onChange={setModel} options={CLAUDE_MODELS.map((m) => ({ value: m.value, label: m.label }))} />
-          </Stack>
-        )}
-        {usesClaude(provider) && (
-          <Stack gap={1}>
-            <Text variant="caption" color="tertiary">
-              Effort
-            </Text>
-            <SegmentedControl value={effort} onChange={setEffort} options={EFFORTS.map((e) => ({ value: e.value, label: e.label }))} />
-          </Stack>
-        )}
-      </Stack>
+      <EnginePicker p={picker} />
 
       <Stack direction="row" gap={2} align="center">
         <Button variant="primary" loading={busy} onClick={run}>
@@ -402,7 +177,7 @@ export function AskAiPanel({ cwd, entries, selection, api, apiFor, ui, close }: 
 
       {result && (
         <Stack gap={2}>
-          <Stack direction="row" align="center" gap={2}>
+          <Stack direction="row" align="center" gap={2} className="flex-wrap">
             <Badge variant="accent">{result.engine ?? 'ai'}</Badge>
             {result.model && (
               <Text variant="footnote" color="secondary">
@@ -410,6 +185,9 @@ export function AskAiPanel({ cwd, entries, selection, api, apiFor, ui, close }: 
               </Text>
             )}
             {result.usage?.truncated && <Badge variant="neutral">context truncated</Badge>}
+            <Button variant="secondary" size="sm" onClick={continueInChat}>
+              Continue in chat →
+            </Button>
           </Stack>
           <Panel className="p-4 bg-fill/5">
             {answer ? <Markdown text={answer} /> : <Text color="secondary">(empty response)</Text>}

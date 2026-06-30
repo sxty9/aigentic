@@ -6,9 +6,11 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
+	"time"
 
 	"github.com/sxty9/aigentic/aigentic"
 	"github.com/sxty9/aigentic/backend/internal/auth"
@@ -28,14 +30,16 @@ const (
 // Server wires the session verifier, the processor registry and the admin-managed API-key
 // store into HTTP handlers.
 type Server struct {
-	v   *auth.Verifier
-	reg *prizm.Registry
-	sec *secretstore.Store // admin-managed Anthropic key; nil disables the secret endpoints
+	v            *auth.Verifier
+	reg          *prizm.Registry
+	sec          *secretstore.Store                      // admin-managed Anthropic key; nil disables the secret endpoints
+	ollamaModels func(context.Context) ([]string, error) // lists local ollama models for the picker; nil => none
 }
 
-// New builds a server. sec may be nil (the /secret endpoints then report 503).
-func New(v *auth.Verifier, reg *prizm.Registry, sec *secretstore.Store) *Server {
-	return &Server{v: v, reg: reg, sec: sec}
+// New builds a server. sec may be nil (the /secret endpoints then report 503); ollamaModels may
+// be nil (the /models endpoint then returns no local models).
+func New(v *auth.Verifier, reg *prizm.Registry, sec *secretstore.Store, ollamaModels func(context.Context) ([]string, error)) *Server {
+	return &Server{v: v, reg: reg, sec: sec, ollamaModels: ollamaModels}
 }
 
 type handler func(w http.ResponseWriter, r *http.Request, u *auth.User)
@@ -59,6 +63,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET "+base+"claude", s.guard(rights.GroupRun, false, s.claudeStatus))
 	mux.HandleFunc("POST "+base+"claude/link", s.guard(rights.GroupRun, true, s.claudeLink)) // {token}
 	mux.HandleFunc("POST "+base+"claude/unlink", s.guard(rights.GroupRun, true, s.claudeUnlink))
+	// Available models per engine (for the Files "Ask AI" picker): static Claude list + the
+	// locally-pulled ollama models. Names aren't sensitive; gate on the run right.
+	mux.HandleFunc("GET "+base+"models", s.guard(rights.GroupRun, false, s.modelsList))
 	mux.HandleFunc("GET "+base+"health", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 	})
@@ -288,6 +295,28 @@ func (s *Server) claudeUnlink(w http.ResponseWriter, _ *http.Request, u *auth.Us
 		return
 	}
 	writeJSON(w, http.StatusOK, s.sec.TokenStatus(u.Username))
+}
+
+// modelsList reports the models the "Ask AI" picker can offer per engine: a static Claude list
+// (used by claude-cli + claude-api) and the locally-pulled ollama models (used by the local
+// engine). Best-effort: ollama unreachable => an empty local list.
+func (s *Server) modelsList(w http.ResponseWriter, r *http.Request, _ *auth.User) {
+	out := map[string]any{
+		"claude": []map[string]string{
+			{"id": "claude-sonnet-4-6", "label": "Sonnet"},
+			{"id": "claude-opus-4-8", "label": "Opus"},
+			{"id": "claude-haiku-4-5", "label": "Haiku"},
+		},
+		"ollama": []string{},
+	}
+	if s.ollamaModels != nil {
+		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+		defer cancel()
+		if m, err := s.ollamaModels(ctx); err == nil && len(m) > 0 {
+			out["ollama"] = m
+		}
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 // paidKind reports whether a kind can reach the metered Anthropic API.

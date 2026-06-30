@@ -151,19 +151,19 @@ func (c *ollamaClient) resolveModel(ctx context.Context, requested string) (stri
 	return m, nil
 }
 
-// firstAvailableModel queries /api/tags and returns the first locally-pulled model name.
-func (c *ollamaClient) firstAvailableModel(ctx context.Context) (string, error) {
+// listModels queries /api/tags and returns the locally-pulled model names.
+func (c *ollamaClient) listModels(ctx context.Context) ([]string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+"/api/tags", nil)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	resp, err := c.client.Do(req)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("ollama /api/tags: status %d", resp.StatusCode)
+		return nil, fmt.Errorf("ollama /api/tags: status %d", resp.StatusCode)
 	}
 	var tags struct {
 		Models []struct {
@@ -171,12 +171,32 @@ func (c *ollamaClient) firstAvailableModel(ctx context.Context) (string, error) 
 		} `json:"models"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&tags); err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(tags.Models))
+	for _, m := range tags.Models {
+		if m.Name != "" {
+			out = append(out, m.Name)
+		}
+	}
+	return out, nil
+}
+
+// firstAvailableModel returns the first locally-pulled model name (zero-config default).
+func (c *ollamaClient) firstAvailableModel(ctx context.Context) (string, error) {
+	models, err := c.listModels(ctx)
+	if err != nil {
 		return "", err
 	}
-	if len(tags.Models) == 0 {
+	if len(models) == 0 {
 		return "", errors.New("no ollama models pulled")
 	}
-	return tags.Models[0].Name, nil
+	return models[0], nil
+}
+
+// OllamaModels lists the names of locally-pulled ollama models, for the dashboard model picker.
+func OllamaModels(ctx context.Context, cfg OllamaConfig) ([]string, error) {
+	return newOllamaClient(cfg).listModels(ctx)
 }
 
 // NewOllama returns the local-ollama leaf processor (Kind "ollama"). lim carries the

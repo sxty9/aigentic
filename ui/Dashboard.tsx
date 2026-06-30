@@ -2,8 +2,10 @@ import { useState } from 'react';
 import {
   Badge,
   Button,
+  ContentRegion,
   Panel,
   PasswordInput,
+  SegmentedControl,
   Stack,
   Text,
   useLiveQuery,
@@ -11,26 +13,61 @@ import {
 } from '@holistic/ui';
 import type { Info, SecretStatus } from './types';
 import { ConnectAiPanel } from './ConnectAiPanel';
+import { ChatView } from './ChatView';
 
-// The aigentic tab is per-user self-service: anyone with the run right links THEIR OWN AI
-// credentials here (no admin bears the token load). Admins additionally see the shared
-// fallback-key panel. End-user AI usage itself lives in the Files app's "Ask AI" action.
-export function Dashboard({ user, api, ui }: ServiceContextProps) {
-  const info = useLiveQuery<Info>(() => api.get<Info>('info'), 10000);
+// The aigentic tab is the user's AI surface: a full chat (pick a model or let Auto choose),
+// plus per-user self-service to link THEIR OWN Claude (no admin bears the token load). Admins
+// additionally see the shared fallback-key panel. The same AI is also reachable folder-scoped
+// from the Files app's "Ask AI" action, which can hand a conversation off into this chat.
+export function Dashboard({ user, api, apiFor, ui }: ServiceContextProps) {
+  const [view, setView] = useState<'chat' | 'connect'>('chat');
 
   return (
+    <ContentRegion>
+      <Stack gap={4}>
+        <Stack direction="row" align="center" justify="between" className="flex-wrap" gap={2}>
+          <Stack direction="row" align="center" gap={2}>
+            <Text variant="subhead" weight="semibold">
+              Aigentic
+            </Text>
+            {user.isAdmin && <Badge variant="accent">admin</Badge>}
+          </Stack>
+          <SegmentedControl
+            value={view}
+            onChange={setView}
+            options={[
+              { value: 'chat', label: 'Chat' },
+              { value: 'connect', label: 'Connect AI' },
+            ]}
+          />
+        </Stack>
+
+        {view === 'chat' ? (
+          <ChatView api={api} apiFor={apiFor} ui={ui} />
+        ) : (
+          <ConnectView api={api} ui={ui} isAdmin={user.isAdmin} />
+        )}
+      </Stack>
+    </ContentRegion>
+  );
+}
+
+// ConnectView gathers the credential panels: the user links their own Claude (and Anthropic
+// key); admins additionally manage the optional shared fallback key.
+function ConnectView({ api, ui, isAdmin }: Pick<ServiceContextProps, 'api' | 'ui'> & { isAdmin: boolean }) {
+  const info = useLiveQuery<Info>(() => api.get<Info>('info'), 10000);
+  return (
     <Stack gap={4}>
-      <Panel title="Aigentic" className="p-4">
+      <Panel title="Service" className="p-4">
         {info.data ? (
           <Stack gap={2}>
             <Stack direction="row" align="center" gap={2}>
               <Text weight="semibold">{info.data.service}</Text>
               <Badge variant="neutral">v{info.data.version}</Badge>
-              {info.data.isAdmin && <Badge variant="accent">admin</Badge>}
             </Stack>
             <Text color="secondary">
-              Link your own Claude below. Then run AI from the Files app — open a folder and choose
-              “Ask AI”. Processors: {info.data.kinds.join(', ') || '—'}
+              Link your own Claude below to use the paid engines as yourself. Without it, chat falls
+              back to the free local engine. Processors: {info.data.kinds.join(', ') || '—'}
             </Text>
           </Stack>
         ) : (
@@ -42,7 +79,7 @@ export function Dashboard({ user, api, ui }: ServiceContextProps) {
 
       <ConnectAiPanel api={api} ui={ui} />
 
-      {user.isAdmin && <GlobalKeyPanel api={api} ui={ui} />}
+      {isAdmin && <GlobalKeyPanel api={api} ui={ui} />}
     </Stack>
   );
 }

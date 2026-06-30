@@ -59,7 +59,9 @@ func main() {
 	}
 
 	srv := &http.Server{
-		Handler:           api.New(v, reg, sec).Handler(),
+		Handler: api.New(v, reg, sec, func(ctx context.Context) ([]string, error) {
+			return aigentic.OllamaModels(ctx, ollamaConfig())
+		}).Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
@@ -89,10 +91,7 @@ func main() {
 // systemd unit). Engines self-report ErrProcessorUnavailable when their backing service or
 // secret is absent, so a partial environment still yields a runnable service.
 func configFromEnv(sec *secretstore.Store) aigentic.Config {
-	ollama := aigentic.OllamaConfig{
-		BaseURL: os.Getenv("OLLAMA_HOST"),
-		Model:   os.Getenv("AIGENTIC_OLLAMA_MODEL"),
-	}
+	ollama := ollamaConfig()
 	return aigentic.Config{
 		MaxTokens:       atoi(os.Getenv("AIGENTIC_MAX_TOKENS")),
 		MaxContextBytes: atoi(os.Getenv("AIGENTIC_MAX_CONTEXT_BYTES")),
@@ -124,6 +123,14 @@ func configFromEnv(sec *secretstore.Store) aigentic.Config {
 			Utilization: aigentic.NewCLIUtilization(cliProjectsDir(), cliWindow(), atoi64(os.Getenv("AIGENTIC_CLI_BUDGET_5H"))),
 			SpillAt:     atof(os.Getenv("AIGENTIC_CLI_SPILL_AT")),
 		},
+	}
+}
+
+// ollamaConfig builds the shared local-ollama config (engine + classifier + model listing).
+func ollamaConfig() aigentic.OllamaConfig {
+	return aigentic.OllamaConfig{
+		BaseURL: os.Getenv("OLLAMA_HOST"),
+		Model:   os.Getenv("AIGENTIC_OLLAMA_MODEL"),
 	}
 }
 
