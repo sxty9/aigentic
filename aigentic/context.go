@@ -62,6 +62,35 @@ func assemble(ctx context.Context, env prizm.Env, in Request, lim Limits) (promp
 		}
 	}
 
+	// Inline files: caller-supplied bytes (no fs access). Same budget + binary filter as
+	// Paths, and stored in the graveyard for identical provenance.
+	for _, f := range in.Inline {
+		data := []byte(f.Content)
+		skip := ""
+		switch {
+		case used >= budget || len(data) > budget-used:
+			skip = "budget"
+		case len(data) == 0:
+			skip = "empty"
+		case isBinary(data):
+			skip = "binary"
+		}
+		if skip != "" {
+			items = append(items, ContextItem{Path: f.Path, Skipped: skip})
+			if skip == "budget" {
+				truncated = true
+			}
+			continue
+		}
+		ref, perr := env.Grave.Put(ctx, "", data)
+		if perr != nil {
+			return "", nil, false, fmt.Errorf("graveyard put inline %q: %w", f.Path, perr)
+		}
+		fmt.Fprintf(&b, "<file path=%q>\n%s\n</file>\n", f.Path, data)
+		used += len(data)
+		items = append(items, ContextItem{Path: f.Path, Ref: ref, Bytes: len(data)})
+	}
+
 	prompt = composePrompt(b.String(), in)
 	return prompt, items, truncated, nil
 }

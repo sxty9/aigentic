@@ -404,6 +404,66 @@ func TestClaudeAPIKeyFuncSuppliesKey(t *testing.T) {
 	}
 }
 
+// With no model configured, the ollama leaf auto-detects the first locally-pulled model from
+// /api/tags (zero-config) and uses it for the chat call.
+func TestOllamaAutoDetectsModel(t *testing.T) {
+	var chatModel string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/tags":
+			_ = json.NewEncoder(w).Encode(map[string]any{"models": []map[string]string{{"name": "qwen2.5:0.5b"}}})
+		case "/api/chat":
+			var body struct {
+				Model string `json:"model"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			chatModel = body.Model
+			_ = json.NewEncoder(w).Encode(map[string]any{"message": map[string]string{"content": "auto-hi"}, "prompt_eval_count": 1, "eval_count": 1})
+		}
+	}))
+	defer srv.Close()
+
+	reg := newReg(t, Config{Ollama: OllamaConfig{BaseURL: srv.URL}}) // no Model => auto-detect
+	out := mustRoute(t, reg, KindOllama, Request{Prompt: "hi"})
+	if out.Output != "auto-hi" {
+		t.Fatalf("output=%q", out.Output)
+	}
+	if chatModel != "qwen2.5:0.5b" {
+		t.Fatalf("chat used model %q, want auto-detected qwen2.5:0.5b", chatModel)
+	}
+}
+
+// An ollama that errors (non-200) is treated as UNAVAILABLE, so choose falls back to a working
+// engine (claude-api) instead of surfacing a hard 502. This is the path the Files "Ask AI"
+// action relies on when ollama is misconfigured.
+func TestChooseFallsBackWhenOllamaErrors(t *testing.T) {
+	ollamaBad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/tags" {
+			_ = json.NewEncoder(w).Encode(map[string]any{"models": []map[string]string{{"name": "m"}}})
+			return
+		}
+		w.WriteHeader(http.StatusInternalServerError) // chat fails
+	}))
+	defer ollamaBad.Close()
+	an := anthropicStub("api-fallback")
+	defer an.Close()
+
+	reg := newReg(t, Config{
+		Ollama:    OllamaConfig{BaseURL: ollamaBad.URL},
+		ClaudeCLI: ClaudeCLIConfig{Run: func(context.Context, string, []string, string) ([]byte, error) { return nil, errors.New("no cli") }},
+		ClaudeAPI: ClaudeAPIConfig{BaseURL: an.URL, APIKey: "k"},
+		// No classifier => heuristic; short prompt => low => ollama is tried first, then the
+		// chain skips the (unavailable) cli and reaches claude-api.
+	})
+	got := mustRoute(t, reg, KindChoose, Request{Prompt: "hi"})
+	if got.Engine != KindClaudeAPI || got.Output != "api-fallback" {
+		t.Fatalf("expected fallback to claude-api, got engine=%q output=%q", got.Engine, got.Output)
+	}
+	if got.Decision == nil || !got.Decision.Fallback {
+		t.Fatalf("expected decision.fallback=true, got %+v", got.Decision)
+	}
+}
+
 // With no static key and KeyFunc reporting none, the leaf is unavailable (not a crash) — so
 // choose's availability fallback still applies.
 func TestClaudeAPIUnavailableWithoutKey(t *testing.T) {

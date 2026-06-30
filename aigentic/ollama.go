@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/sxty9/prizm/prizm"
@@ -26,6 +28,9 @@ type ollamaClient struct {
 	base   string
 	model  string
 	client *http.Client
+
+	mu        sync.Mutex
+	autoModel string // lazily-detected model when none is configured (zero-config)
 }
 
 func newOllamaClient(cfg OllamaConfig) *ollamaClient {
@@ -55,9 +60,13 @@ func (c *ollamaClient) chat(ctx context.Context, model, system, user string, num
 // follows the shape) and pins temperature to 0 for a deterministic estimate; the plain
 // leaf path passes nil and stays free-form.
 func (c *ollamaClient) chatFormat(ctx context.Context, model, system, user string, numPredict int, format any) (string, Usage, error) {
-	if model == "" {
-		model = c.model
+	resolved, err := c.resolveModel(ctx, model)
+	if err != nil {
+		// No model to run (none configured and none pulled) is unavailability, not a hard
+		// failure — so the choose router falls back to another engine.
+		return "", Usage{}, fmt.Errorf("%w: ollama: %v", ErrProcessorUnavailable, err)
 	}
+	model = resolved
 	msgs := make([]map[string]string, 0, 2)
 	if system != "" {
 		msgs = append(msgs, map[string]string{"role": "system", "content": system})
@@ -94,9 +103,11 @@ func (c *ollamaClient) chatFormat(ctx context.Context, model, system, user strin
 
 	switch {
 	case resp.StatusCode == http.StatusNotFound:
-		return "", Usage{}, fmt.Errorf("%w: ollama model %q not found (pull it first)", prizm.ErrInvalidRequest, model)
+		// Model not pulled = this engine can't serve the request = unavailable, so choose
+		// falls back rather than surfacing a hard 502.
+		return "", Usage{}, fmt.Errorf("%w: ollama model %q not found (pull it first)", ErrProcessorUnavailable, model)
 	case resp.StatusCode != http.StatusOK:
-		return "", Usage{}, fmt.Errorf("ollama: status %d", resp.StatusCode)
+		return "", Usage{}, fmt.Errorf("%w: ollama: status %d", ErrProcessorUnavailable, resp.StatusCode)
 	}
 
 	var out struct {
@@ -115,6 +126,57 @@ func (c *ollamaClient) chatFormat(ctx context.Context, model, system, user strin
 		TotalTokens:  out.PromptEvalCount + out.EvalCount,
 	}
 	return out.Message.Content, u, nil
+}
+
+// resolveModel returns the model to use: an explicit per-request model wins, else the
+// configured default, else a lazily-detected locally-available model (so the leaf works
+// zero-config wherever ANY model is pulled). The detected model is cached.
+func (c *ollamaClient) resolveModel(ctx context.Context, requested string) (string, error) {
+	if requested != "" {
+		return requested, nil
+	}
+	if c.model != "" {
+		return c.model, nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.autoModel != "" {
+		return c.autoModel, nil
+	}
+	m, err := c.firstAvailableModel(ctx)
+	if err != nil {
+		return "", err
+	}
+	c.autoModel = m
+	return m, nil
+}
+
+// firstAvailableModel queries /api/tags and returns the first locally-pulled model name.
+func (c *ollamaClient) firstAvailableModel(ctx context.Context) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+"/api/tags", nil)
+	if err != nil {
+		return "", err
+	}
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("ollama /api/tags: status %d", resp.StatusCode)
+	}
+	var tags struct {
+		Models []struct {
+			Name string `json:"name"`
+		} `json:"models"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&tags); err != nil {
+		return "", err
+	}
+	if len(tags.Models) == 0 {
+		return "", errors.New("no ollama models pulled")
+	}
+	return tags.Models[0].Name, nil
 }
 
 // NewOllama returns the local-ollama leaf processor (Kind "ollama"). lim carries the

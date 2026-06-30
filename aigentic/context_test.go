@@ -132,3 +132,59 @@ func TestAssembleTruncation(t *testing.T) {
 		t.Errorf("b.txt should be budget-skipped: %+v", it)
 	}
 }
+
+// Inline files are assembled WITHOUT any fs access: text content is included + stored for
+// provenance, binary/empty content is skipped, and the byte budget still applies.
+func TestAssembleInlineContent(t *testing.T) {
+	grave := graveyard.NewMemory()
+	lim := Limits{ContextRoot: t.TempDir(), MaxContextBytes: DefaultMaxContextBytes}
+	in := Request{
+		Prompt: "summarize",
+		Inline: []InlineFile{
+			{Path: "me/Notes/spec.md", Content: "# Spec\nhello from samba"},
+			{Path: "me/empty.txt", Content: ""},
+			{Path: "me/bin.dat", Content: "ab\x00cd"},
+		},
+	}
+
+	prompt, items, truncated, err := assemble(context.Background(), envFor(grave, "nanu"), in, lim)
+	if err != nil {
+		t.Fatalf("assemble: %v", err)
+	}
+	if truncated {
+		t.Errorf("did not expect truncation")
+	}
+	if !strings.Contains(prompt, "hello from samba") {
+		t.Errorf("prompt missing inline content:\n%s", prompt)
+	}
+	spec := itemFor(items, "spec.md")
+	if spec == nil || spec.Ref == "" || spec.Bytes != len("# Spec\nhello from samba") {
+		t.Fatalf("spec item wrong: %+v", spec)
+	}
+	if got, found, _ := grave.Get(context.Background(), spec.Ref); !found || string(got) != "# Spec\nhello from samba" {
+		t.Errorf("inline provenance: get(%s) => %q found=%v", spec.Ref, got, found)
+	}
+	if it := itemFor(items, "empty.txt"); it == nil || it.Skipped != "empty" {
+		t.Errorf("empty inline should be skipped: %+v", it)
+	}
+	if it := itemFor(items, "bin.dat"); it == nil || it.Skipped != "binary" {
+		t.Errorf("binary inline should be skipped: %+v", it)
+	}
+}
+
+// A single oversized inline file exceeds the budget and is reported as skipped:budget.
+func TestAssembleInlineBudget(t *testing.T) {
+	grave := graveyard.NewMemory()
+	lim := Limits{ContextRoot: t.TempDir(), MaxContextBytes: 16}
+	in := Request{Prompt: "x", Inline: []InlineFile{{Path: "me/big.txt", Content: strings.Repeat("a", 100)}}}
+	_, items, truncated, err := assemble(context.Background(), envFor(grave, "nanu"), in, lim)
+	if err != nil {
+		t.Fatalf("assemble: %v", err)
+	}
+	if !truncated {
+		t.Errorf("expected truncation")
+	}
+	if it := itemFor(items, "big.txt"); it == nil || it.Skipped != "budget" {
+		t.Errorf("oversized inline should be budget-skipped: %+v", it)
+	}
+}

@@ -13,6 +13,9 @@ export interface Info {
 export interface AigenticRequest {
   prompt: string;
   paths?: string[];
+  // Caller-supplied file contents (no server fs access) — e.g. the Files app reads the user's
+  // private share and passes the bytes here. Same byte budget + binary filter as paths.
+  inline?: { path: string; content: string }[];
   outputFormat?: string;
   model?: string;
   maxTokens?: number;

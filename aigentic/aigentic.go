@@ -75,6 +75,16 @@ type Request struct {
 	MaxTokens    int            `json:"maxTokens,omitempty"`    // token-overusage guard; 0 => DefaultMaxTokens; clamped to the ceiling
 	Claude       *ClaudeOptions `json:"claude,omitempty"`       // Claude-leaf knobs (effort, …); nil/ignored for ollama
 	Choose       *ChooseOptions `json:"choose,omitempty"`       // router-only knobs; nil/ignored for the three leaves
+	Inline       []InlineFile   `json:"inline,omitempty"`       // caller-supplied file contents used as context WITHOUT server fs access (e.g. the Files app reads the user's private share and passes the bytes here); same byte budget + binary filter as Paths
+}
+
+// InlineFile is a file's content supplied directly in the request (not read from disk by the
+// daemon). It lets a privileged caller — e.g. the holistic Files app, which already has the
+// user's confined fs access — hand aigentic the bytes, keeping the daemon unprivileged and
+// fs-free for the private Samba share.
+type InlineFile struct {
+	Path    string `json:"path"`    // display/provenance path (e.g. "me/Notes/spec.md"); never used for fs access
+	Content string `json:"content"` // the file's text content
 }
 
 // ClaudeOptions are the knobs specific to the Claude leaves (claude-api, claude-cli).

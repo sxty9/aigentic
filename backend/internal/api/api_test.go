@@ -62,7 +62,7 @@ func newServer(t *testing.T, adminGroup, ollamaURL string) *Server {
 	t.Helper()
 	reg := prizm.NewRegistry(0)
 	if err := aigentic.Register(reg, graveyard.NewMemory(), aigentic.Config{
-		Ollama: aigentic.OllamaConfig{BaseURL: ollamaURL},
+		Ollama: aigentic.OllamaConfig{BaseURL: ollamaURL, Model: "stub"}, // pin a model so the leaf skips /api/tags auto-detection
 	}); err != nil {
 		t.Fatal(err)
 	}
