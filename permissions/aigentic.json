@@ -1,0 +1,34 @@
+{
+  "service": "aigentic",
+  "version": 1,
+  "categories": [
+    {
+      "id": "run",
+      "label": "Run",
+      "description": "Fine-grained rights this service exposes to privleg.",
+      "permissions": [
+        {
+          "id": "execute",
+          "label": "Run aigentic",
+          "description": "Submit a request to an aigentic processor (ollama / claude-cli / choose) and receive its output.",
+          "group": "hp_aigentic_run",
+          "default": false
+        }
+      ]
+    },
+    {
+      "id": "cost",
+      "label": "Metered cost",
+      "description": "Rights that incur real monetary cost.",
+      "permissions": [
+        {
+          "id": "api",
+          "label": "Use the paid Claude API",
+          "description": "Invoke the metered Anthropic API directly (claude-api), or via the choose router which may select it.",
+          "group": "hp_aigentic_api",
+          "default": false
+        }
+      ]
+    }
+  ]
+}
