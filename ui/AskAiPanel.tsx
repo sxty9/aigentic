@@ -112,9 +112,41 @@ type Block =
   | { kind: 'code'; code: string }
   | { kind: 'heading'; level: number; text: string }
   | { kind: 'list'; items: string[] }
+  | { kind: 'quote'; text: string }
+  | { kind: 'math'; tex: string }
   | { kind: 'para'; text: string };
 const LIST_RE = /^\s*([-*•]|\d+[.)])\s+/;
 const HEAD_RE = /^(#{1,4})\s+(.*)$/;
+const MATH_LINE_RE = /^\s*\$\$([\s\S]+?)\$\$\s*$/;
+
+const GREEK: Record<string, string> = {
+  alpha: 'α', beta: 'β', gamma: 'γ', delta: 'δ', epsilon: 'ε', theta: 'θ', lambda: 'λ',
+  mu: 'μ', pi: 'π', rho: 'ρ', sigma: 'σ', tau: 'τ', phi: 'φ', omega: 'ω', Delta: 'Δ', Sigma: 'Σ', Omega: 'Ω',
+};
+
+// texToPlain renders common LaTeX as readable Unicode (we ship no math typesetter): \frac and
+// \sqrt become inline forms, operators/greek map to symbols, and unknown commands + braces are
+// stripped. Best-effort, but far cleaner than raw "$$\frac{d}{v \cdot c}$$".
+function texToPlain(s: string): string {
+  let out = s;
+  for (let i = 0; i < 3; i++) out = out.replace(/\\frac\s*\{([^{}]*)\}\s*\{([^{}]*)\}/g, '($1)/($2)');
+  return out
+    .replace(/\\sqrt\s*\{([^{}]*)\}/g, '√($1)')
+    .replace(/\\cdot/g, '·')
+    .replace(/\\times/g, '×')
+    .replace(/\\div/g, '÷')
+    .replace(/\\pm/g, '±')
+    .replace(/\\leq?\b/g, '≤')
+    .replace(/\\geq?\b/g, '≥')
+    .replace(/\\neq/g, '≠')
+    .replace(/\\approx/g, '≈')
+    .replace(/\\infty/g, '∞')
+    .replace(/\\(Delta|Sigma|Omega|alpha|beta|gamma|delta|epsilon|theta|lambda|mu|pi|rho|sigma|tau|phi|omega)\b/g, (_, g: string) => GREEK[g] ?? g)
+    .replace(/\\[a-zA-Z]+\s*/g, ' ')
+    .replace(/[{}]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
 function parseBlocks(src: string): Block[] {
   const lines = src.split('\n');
   const blocks: Block[] = [];
@@ -130,6 +162,21 @@ function parseBlocks(src: string): Block[] {
       }
       i++;
       blocks.push({ kind: 'code', code: buf.join('\n') });
+      continue;
+    }
+    const ml = MATH_LINE_RE.exec(line);
+    if (ml) {
+      blocks.push({ kind: 'math', tex: ml[1].trim() });
+      i++;
+      continue;
+    }
+    if (line.trim().startsWith('>')) {
+      const buf: string[] = [];
+      while (i < lines.length && lines[i].trim().startsWith('>')) {
+        buf.push(lines[i].replace(/^\s*>\s?/, ''));
+        i++;
+      }
+      blocks.push({ kind: 'quote', text: buf.join(' ') });
       continue;
     }
     const h = HEAD_RE.exec(line);
@@ -162,7 +209,8 @@ function parseBlocks(src: string): Block[] {
 }
 function inline(s: string): ReactNode[] {
   const out: ReactNode[] = [];
-  const re = /(\*\*([^*]+)\*\*|`([^`]+)`)/g;
+  // bold (**…**) | italic (*…*) | inline code (`…`) | inline math ($…$)
+  const re = /(\*\*([^*]+)\*\*|\*([^*\n]+)\*|`([^`]+)`|\$([^$\n]+)\$)/g;
   let last = 0;
   let key = 0;
   let m: RegExpExecArray | null;
@@ -174,10 +222,22 @@ function inline(s: string): ReactNode[] {
           {m[2]}
         </Text>,
       );
-    } else {
+    } else if (m[3] != null) {
+      out.push(
+        <Text key={key++} as="span" className="italic">
+          {m[3]}
+        </Text>,
+      );
+    } else if (m[4] != null) {
       out.push(
         <Text key={key++} as="code" className="rounded bg-fill/20 px-1 py-0.5 font-mono text-footnote">
-          {m[3]}
+          {m[4]}
+        </Text>,
+      );
+    } else {
+      out.push(
+        <Text key={key++} as="span" className="font-mono">
+          {texToPlain(m[5])}
         </Text>,
       );
     }
@@ -210,6 +270,22 @@ function Markdown({ text }: { text: string }) {
                   {inline(it)}
                 </Text>
               ))}
+            </Stack>
+          );
+        }
+        if (b.kind === 'quote') {
+          return (
+            <Stack key={i} className="border-l-2 border-separator pl-3">
+              <Text color="secondary" className="italic leading-relaxed">
+                {inline(b.text)}
+              </Text>
+            </Stack>
+          );
+        }
+        if (b.kind === 'math') {
+          return (
+            <Stack key={i} align="center" className="rounded bg-fill/10 px-3 py-2">
+              <Text className="font-mono">{texToPlain(b.tex)}</Text>
             </Stack>
           );
         }
