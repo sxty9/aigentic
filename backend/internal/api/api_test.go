@@ -66,7 +66,8 @@ func newServer(t *testing.T, adminGroup, ollamaURL string) *Server {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	store := secretstore.New(filepath.Join(t.TempDir(), "anthropic.key"), "")
+	td := t.TempDir()
+	store := secretstore.New(filepath.Join(td, "anthropic.key"), filepath.Join(td, "users"), "")
 	return New(auth.NewVerifier(secret, adminGroup), reg, store)
 }
 
@@ -254,5 +255,73 @@ func TestSecretRejectsBadKeyAndMissingCSRF(t *testing.T) {
 	// Missing CSRF on the mutating write => 403, even for an admin.
 	if rec := do(t, s, "POST", base+"secret", []byte(`{"key":"`+testKey+`"}`), access, ""); rec.Code != http.StatusForbidden {
 		t.Errorf("missing csrf: got %d want 403", rec.Code)
+	}
+}
+
+const testToken = "claude_token_0123456789abcdef0123456789"
+
+// A run-right user manages their OWN api key + Claude subscription token; values never appear
+// in any response.
+func TestPerUserCredentials(t *testing.T) {
+	username, group := currentUser(t)
+	s := newServer(t, group, "") // admin holds the run right
+	access := mintAccess(t, username)
+	const csrf = "csrf-token"
+
+	// --- per-user API key ---
+	rec := do(t, s, "POST", base+"mykey", []byte(`{"key":"`+testKey+`"}`), access, csrf)
+	if rec.Code != http.StatusOK || strings.Contains(rec.Body.String(), testKey) {
+		t.Fatalf("POST mykey: %d body leaks=%v (%s)", rec.Code, strings.Contains(rec.Body.String(), testKey), rec.Body)
+	}
+	rec = do(t, s, "GET", base+"mykey", nil, access, "")
+	var ks struct {
+		Configured bool   `json:"configured"`
+		Source     string `json:"source"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &ks)
+	if !ks.Configured || ks.Source != "user" {
+		t.Fatalf("mykey status = %+v, want configured user", ks)
+	}
+	if rec := do(t, s, "POST", base+"mykey", []byte(`{"clear":true}`), access, csrf); rec.Code != http.StatusOK {
+		t.Fatalf("clear mykey: %d", rec.Code)
+	}
+
+	// --- per-user Claude subscription token ---
+	rec = do(t, s, "GET", base+"claude", nil, access, "")
+	var ts struct {
+		Linked bool `json:"linked"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &ts)
+	if ts.Linked {
+		t.Fatal("claude linked before any link")
+	}
+	rec = do(t, s, "POST", base+"claude/link", []byte(`{"token":"`+testToken+`"}`), access, csrf)
+	if rec.Code != http.StatusOK || strings.Contains(rec.Body.String(), testToken) {
+		t.Fatalf("link claude: %d leaks=%v (%s)", rec.Code, strings.Contains(rec.Body.String(), testToken), rec.Body)
+	}
+	rec = do(t, s, "GET", base+"claude", nil, access, "")
+	_ = json.Unmarshal(rec.Body.Bytes(), &ts)
+	if !ts.Linked {
+		t.Fatal("claude not linked after link")
+	}
+	// A bad token => 400.
+	if rec := do(t, s, "POST", base+"claude/link", []byte(`{"token":"nope"}`), access, csrf); rec.Code != http.StatusBadRequest {
+		t.Errorf("bad token: got %d want 400", rec.Code)
+	}
+	if rec := do(t, s, "POST", base+"claude/unlink", nil, access, csrf); rec.Code != http.StatusOK {
+		t.Fatalf("unlink: %d", rec.Code)
+	}
+}
+
+// Per-user endpoints require the run right (and CSRF on writes).
+func TestPerUserRequiresRunRight(t *testing.T) {
+	username, _ := currentUser(t)
+	s := newServer(t, "hp_aigentic_nonexistent_admin", "") // not admin, lacks run right
+	access := mintAccess(t, username)
+	if rec := do(t, s, "GET", base+"mykey", nil, access, ""); rec.Code != http.StatusForbidden {
+		t.Errorf("no-run-right GET mykey: got %d want 403", rec.Code)
+	}
+	if rec := do(t, s, "POST", base+"claude/link", []byte(`{"token":"`+testToken+`"}`), access, "csrf-token"); rec.Code != http.StatusForbidden {
+		t.Errorf("no-run-right link: got %d want 403", rec.Code)
 	}
 }

@@ -38,7 +38,7 @@ func anthropicStub(text string) *httptest.Server {
 }
 
 func fakeCLI(result string) ExecRunner {
-	return func(_ context.Context, _ string, _ []string, _ string) ([]byte, error) {
+	return func(_ context.Context, _ string, _ []string, _ string, _ []string) ([]byte, error) {
 		return json.Marshal(map[string]any{
 			"type":     "result",
 			"result":   result,
@@ -393,7 +393,7 @@ func TestClaudeAPIKeyFuncSuppliesKey(t *testing.T) {
 
 	reg := newReg(t, Config{ClaudeAPI: ClaudeAPIConfig{
 		BaseURL: srv.URL,
-		KeyFunc: func() (string, bool) { return "sk-ant-runtime-key", true },
+		KeyFunc: func(string) (string, bool) { return "sk-ant-runtime-key", true },
 	}})
 	out := mustRoute(t, reg, KindClaudeAPI, Request{Prompt: "hi"})
 	if out.Output != "ok" {
@@ -449,8 +449,10 @@ func TestChooseFallsBackWhenOllamaErrors(t *testing.T) {
 	defer an.Close()
 
 	reg := newReg(t, Config{
-		Ollama:    OllamaConfig{BaseURL: ollamaBad.URL},
-		ClaudeCLI: ClaudeCLIConfig{Run: func(context.Context, string, []string, string) ([]byte, error) { return nil, errors.New("no cli") }},
+		Ollama: OllamaConfig{BaseURL: ollamaBad.URL},
+		ClaudeCLI: ClaudeCLIConfig{Run: func(context.Context, string, []string, string, []string) ([]byte, error) {
+			return nil, errors.New("no cli")
+		}},
 		ClaudeAPI: ClaudeAPIConfig{BaseURL: an.URL, APIKey: "k"},
 		// No classifier => heuristic; short prompt => low => ollama is tried first, then the
 		// chain skips the (unavailable) cli and reaches claude-api.
@@ -464,11 +466,50 @@ func TestChooseFallsBackWhenOllamaErrors(t *testing.T) {
 	}
 }
 
+func envHas(env []string, want string) bool {
+	for _, e := range env {
+		if e == want {
+			return true
+		}
+	}
+	return false
+}
+
+// claude-cli runs PER USER: a linked user's token + isolated CLAUDE_CONFIG_DIR are injected; an
+// unlinked user is unavailable; and a config-dir failure fails CLOSED (never the shared dir).
+func TestClaudeCLIPerUser(t *testing.T) {
+	var gotEnv []string
+	capRun := func(_ context.Context, _ string, _ []string, _ string, extraEnv []string) ([]byte, error) {
+		gotEnv = extraEnv
+		return json.Marshal(map[string]any{"type": "result", "result": "ok", "is_error": false, "usage": map[string]int{"input_tokens": 1, "output_tokens": 1}})
+	}
+	linked := func(string) (string, bool) { return "claude_token_X", true }
+	cfgOK := func(string) (string, error) { return "/tmp/cfg", nil }
+
+	reg := newReg(t, Config{ClaudeCLI: ClaudeCLIConfig{Run: capRun, TokenFunc: linked, ConfigDirFunc: cfgOK}})
+	if out := mustRoute(t, reg, KindClaudeCLI, Request{Prompt: "hi"}); out.Output != "ok" {
+		t.Fatalf("output=%q", out.Output)
+	}
+	if !envHas(gotEnv, "CLAUDE_CODE_OAUTH_TOKEN=claude_token_X") || !envHas(gotEnv, "CLAUDE_CONFIG_DIR=/tmp/cfg") {
+		t.Fatalf("per-user env not injected: %v", gotEnv)
+	}
+
+	reg = newReg(t, Config{ClaudeCLI: ClaudeCLIConfig{Run: capRun, TokenFunc: func(string) (string, bool) { return "", false }, ConfigDirFunc: cfgOK}})
+	if _, err := route(reg, KindClaudeCLI, Request{Prompt: "hi"}); !errors.Is(err, ErrProcessorUnavailable) {
+		t.Fatalf("unlinked: err=%v want unavailable", err)
+	}
+
+	reg = newReg(t, Config{ClaudeCLI: ClaudeCLIConfig{Run: capRun, TokenFunc: linked, ConfigDirFunc: func(string) (string, error) { return "", errors.New("mkdir fail") }}})
+	if _, err := route(reg, KindClaudeCLI, Request{Prompt: "hi"}); !errors.Is(err, ErrProcessorUnavailable) {
+		t.Fatalf("configdir fail: err=%v want unavailable (fail closed)", err)
+	}
+}
+
 // With no static key and KeyFunc reporting none, the leaf is unavailable (not a crash) — so
 // choose's availability fallback still applies.
 func TestClaudeAPIUnavailableWithoutKey(t *testing.T) {
 	reg := newReg(t, Config{ClaudeAPI: ClaudeAPIConfig{
-		KeyFunc: func() (string, bool) { return "", false },
+		KeyFunc: func(string) (string, bool) { return "", false },
 	}})
 	if _, err := route(reg, KindClaudeAPI, Request{Prompt: "hi"}); !errors.Is(err, ErrProcessorUnavailable) {
 		t.Fatalf("err = %v, want ErrProcessorUnavailable", err)

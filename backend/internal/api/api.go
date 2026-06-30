@@ -47,11 +47,17 @@ func (s *Server) Handler() http.Handler {
 	// Rights-gated write: run a processor. CSRF double-submit guard required. A second,
 	// Kind-aware right (hp_aigentic_api) is enforced inside run() for the paid engines.
 	mux.HandleFunc("POST "+base+"run", s.guard(rights.GroupRun, true, s.run))
-	// Admin-only: manage the Anthropic API key. Reading status (masked) and writing/clearing
-	// are operator actions, not a per-user capability — gated on admin, not a fine-grained
-	// right. The write is CSRF-guarded; the key value is never returned.
+	// Admin-only: manage the GLOBAL (shared fallback) Anthropic key. Gated on admin; CSRF on
+	// writes; the key value is never returned.
 	mux.HandleFunc("GET "+base+"secret", s.guardAdmin(false, s.secretStatus))
 	mux.HandleFunc("POST "+base+"secret", s.guardAdmin(true, s.secretSet))
+	// Per-user self-service (gated on the run right, not admin): each user links their OWN
+	// Anthropic API key and Claude subscription token. CSRF on writes; secrets never returned.
+	mux.HandleFunc("GET "+base+"mykey", s.guard(rights.GroupRun, false, s.myKeyStatus))
+	mux.HandleFunc("POST "+base+"mykey", s.guard(rights.GroupRun, true, s.myKeySet)) // {key} | {clear:true}
+	mux.HandleFunc("GET "+base+"claude", s.guard(rights.GroupRun, false, s.claudeStatus))
+	mux.HandleFunc("POST "+base+"claude/link", s.guard(rights.GroupRun, true, s.claudeLink)) // {token}
+	mux.HandleFunc("POST "+base+"claude/unlink", s.guard(rights.GroupRun, true, s.claudeUnlink))
 	mux.HandleFunc("GET "+base+"health", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 	})
@@ -150,19 +156,16 @@ func (s *Server) run(w http.ResponseWriter, r *http.Request, u *auth.User) {
 	}
 }
 
-// secretStatus reports whether the Anthropic API key is configured, its source and a masked
-// hint — NEVER the key itself.
+// secretStatus reports the GLOBAL (shared fallback) key's status — NEVER the key itself.
 func (s *Server) secretStatus(w http.ResponseWriter, _ *http.Request, _ *auth.User) {
 	if s.sec == nil {
 		writeErr(w, http.StatusServiceUnavailable, "Key store not configured")
 		return
 	}
-	writeJSON(w, http.StatusOK, s.sec.Status())
+	writeJSON(w, http.StatusOK, s.sec.GlobalStatus())
 }
 
-// secretSet stores a new key, or clears it ({"clear": true}). The request body is the only
-// place a key crosses the wire (inbound, over the holistic TLS session); the response echoes
-// status only, never the key.
+// secretSet stores/clears the GLOBAL (shared fallback) key. Admin-only + CSRF.
 func (s *Server) secretSet(w http.ResponseWriter, r *http.Request, _ *auth.User) {
 	if s.sec == nil {
 		writeErr(w, http.StatusServiceUnavailable, "Key store not configured")
@@ -177,14 +180,14 @@ func (s *Server) secretSet(w http.ResponseWriter, r *http.Request, _ *auth.User)
 		return
 	}
 	if body.Clear {
-		if err := s.sec.Clear(); err != nil {
+		if err := s.sec.ClearGlobal(); err != nil {
 			writeErr(w, http.StatusInternalServerError, "Could not clear the key")
 			return
 		}
-		writeJSON(w, http.StatusOK, s.sec.Status())
+		writeJSON(w, http.StatusOK, s.sec.GlobalStatus())
 		return
 	}
-	if err := s.sec.Set(body.Key); err != nil {
+	if err := s.sec.SetGlobal(body.Key); err != nil {
 		if errors.Is(err, secretstore.ErrInvalidKey) {
 			writeErr(w, http.StatusBadRequest, "That does not look like an Anthropic API key (sk-ant-…)")
 			return
@@ -192,7 +195,98 @@ func (s *Server) secretSet(w http.ResponseWriter, r *http.Request, _ *auth.User)
 		writeErr(w, http.StatusInternalServerError, "Could not store the key")
 		return
 	}
-	writeJSON(w, http.StatusOK, s.sec.Status())
+	writeJSON(w, http.StatusOK, s.sec.GlobalStatus())
+}
+
+// --- per-user self-service (subject = the server-stamped username) ---
+
+// myKeyStatus reports the requesting user's EFFECTIVE api-key status (own → shared → env).
+func (s *Server) myKeyStatus(w http.ResponseWriter, _ *http.Request, u *auth.User) {
+	if s.sec == nil {
+		writeErr(w, http.StatusServiceUnavailable, "Key store not configured")
+		return
+	}
+	writeJSON(w, http.StatusOK, s.sec.UserKeyStatus(u.Username))
+}
+
+// myKeySet stores the requesting user's OWN Anthropic API key, or clears it ({"clear":true}).
+func (s *Server) myKeySet(w http.ResponseWriter, r *http.Request, u *auth.User) {
+	if s.sec == nil {
+		writeErr(w, http.StatusServiceUnavailable, "Key store not configured")
+		return
+	}
+	var body struct {
+		Key   string `json:"key"`
+		Clear bool   `json:"clear"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBody)).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+	if body.Clear {
+		if err := s.sec.ClearUserKey(u.Username); err != nil {
+			writeErr(w, http.StatusInternalServerError, "Could not clear your key")
+			return
+		}
+		writeJSON(w, http.StatusOK, s.sec.UserKeyStatus(u.Username))
+		return
+	}
+	if err := s.sec.SetUserKey(u.Username, body.Key); err != nil {
+		if errors.Is(err, secretstore.ErrInvalidKey) {
+			writeErr(w, http.StatusBadRequest, "That does not look like an Anthropic API key (sk-ant-…)")
+			return
+		}
+		writeErr(w, http.StatusInternalServerError, "Could not store your key")
+		return
+	}
+	writeJSON(w, http.StatusOK, s.sec.UserKeyStatus(u.Username))
+}
+
+// claudeStatus reports whether the requesting user has linked a Claude subscription (masked).
+func (s *Server) claudeStatus(w http.ResponseWriter, _ *http.Request, u *auth.User) {
+	if s.sec == nil {
+		writeErr(w, http.StatusServiceUnavailable, "Key store not configured")
+		return
+	}
+	writeJSON(w, http.StatusOK, s.sec.TokenStatus(u.Username))
+}
+
+// claudeLink stores the requesting user's `claude setup-token` (subscription). CSRF-gated; the
+// token never crosses back.
+func (s *Server) claudeLink(w http.ResponseWriter, r *http.Request, u *auth.User) {
+	if s.sec == nil {
+		writeErr(w, http.StatusServiceUnavailable, "Key store not configured")
+		return
+	}
+	var body struct {
+		Token string `json:"token"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBody)).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+	if err := s.sec.LinkToken(u.Username, body.Token); err != nil {
+		if errors.Is(err, secretstore.ErrInvalidToken) {
+			writeErr(w, http.StatusBadRequest, "That does not look like a Claude setup-token (run `claude setup-token`)")
+			return
+		}
+		writeErr(w, http.StatusInternalServerError, "Could not store your token")
+		return
+	}
+	writeJSON(w, http.StatusOK, s.sec.TokenStatus(u.Username))
+}
+
+// claudeUnlink removes the requesting user's Claude subscription token + CLI session dir.
+func (s *Server) claudeUnlink(w http.ResponseWriter, _ *http.Request, u *auth.User) {
+	if s.sec == nil {
+		writeErr(w, http.StatusServiceUnavailable, "Key store not configured")
+		return
+	}
+	if err := s.sec.UnlinkToken(u.Username); err != nil {
+		writeErr(w, http.StatusInternalServerError, "Could not unlink your Claude")
+		return
+	}
+	writeJSON(w, http.StatusOK, s.sec.TokenStatus(u.Username))
 }
 
 // paidKind reports whether a kind can reach the metered Anthropic API.

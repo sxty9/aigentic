@@ -23,10 +23,11 @@ type ClaudeAPIConfig struct {
 	Version string       // anthropic-version header; default "2023-06-01"
 	Client  *http.Client // default http.DefaultClient
 
-	// KeyFunc, when set, supplies the API key at request time and overrides APIKey when it
-	// returns ok. It lets the key be managed at runtime (e.g. an admin setting it through the
-	// dashboard) without restarting the daemon; APIKey stays the static fallback.
-	KeyFunc func() (string, bool)
+	// KeyFunc, when set, supplies the API key for the REQUESTING user at request time and
+	// overrides APIKey when it returns ok. subject is the server-stamped holistic username, so
+	// each user is billed to their own key (the store falls back to a shared/global key). Read
+	// per request, so a change takes effect without restarting the daemon.
+	KeyFunc func(subject string) (string, bool)
 }
 
 // NewClaudeAPI returns the Anthropic-API leaf processor (Kind "claude-api"). lim carries
@@ -55,7 +56,7 @@ func NewClaudeAPI(cfg ClaudeAPIConfig, lim Limits) prizm.Processor {
 		}
 		apiKey := cfg.APIKey
 		if cfg.KeyFunc != nil {
-			if k, ok := cfg.KeyFunc(); ok && k != "" {
+			if k, ok := cfg.KeyFunc(env.Header.Subject); ok && k != "" {
 				apiKey = k
 			}
 		}

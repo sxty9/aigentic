@@ -13,15 +13,16 @@ registerFolderAction({
   Panel: AskAiPanel,
 });
 
-// The aigentic dashboard tab itself is ADMIN-ONLY configuration (API key, status). Regular
-// users never see it — they use the "Ask AI" action in the Files app. `id` MUST equal the
-// link dir name and the permissions manifest's "service" field.
+// The aigentic tab is PER-USER self-service: anyone with the run right opens it to link their
+// own Claude (API key + subscription token); admins also see the shared fallback-key panel.
+// End-user AI usage lives in the Files app's "Ask AI" action. `id` MUST equal the link dir name
+// and the permissions manifest's "service" field.
 const plugin: ServicePlugin = {
   id: 'aigentic',
   displayName: 'Aigentic',
   icon: BoltIcon,
   order: 100,
-  visible: (user) => user.isAdmin,
+  visible: (user) => userHasRight(user, 'hp_aigentic_run'),
   Component: Dashboard,
 };
 

@@ -38,10 +38,18 @@ export interface RunResponse {
   data: Result;
 }
 
-// Non-secret status of the admin-managed Anthropic API key (GET/POST /secret). The key value
-// itself never crosses back; only a masked hint (sk-ant-…last4) and its source do.
+// Non-secret status of an Anthropic API key (global /secret or per-user /mykey). The key value
+// never crosses back; only a masked hint (sk-ant-…last4) and its source ('user' = the caller's
+// own, 'store' = the shared/admin key, 'env' = the bootstrap).
 export interface SecretStatus {
   configured: boolean;
-  source?: 'store' | 'env';
+  source?: 'user' | 'store' | 'env';
+  hint?: string;
+}
+
+// Non-secret status of a per-user Claude subscription link (/claude). The token never crosses
+// back; only whether it's linked and a masked hint.
+export interface TokenStatus {
+  linked: boolean;
   hint?: string;
 }

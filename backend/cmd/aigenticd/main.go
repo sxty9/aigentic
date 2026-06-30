@@ -48,9 +48,10 @@ func main() {
 		log.Fatalf("aigenticd: %v", err)
 	}
 
-	// The Anthropic API key is admin-managed at runtime (set via the dashboard), persisted
-	// 0600 under the systemd StateDirectory. ANTHROPIC_API_KEY seeds it as a bootstrap.
-	sec := secretstore.New(secretPath(), os.Getenv("ANTHROPIC_API_KEY"))
+	// Credentials are PER-USER: each user links their own Anthropic API key + Claude
+	// subscription token from the dashboard (under StateDirectory/users/<user>/, 0600). The
+	// global anthropic.key is an optional shared admin fallback; ANTHROPIC_API_KEY seeds it.
+	sec := secretstore.New(secretPath(), usersDir(), os.Getenv("ANTHROPIC_API_KEY"))
 
 	reg := prizm.NewRegistry(*maxDepth)
 	if err := aigentic.Register(reg, g, configFromEnv(sec)); err != nil {
@@ -100,12 +101,17 @@ func configFromEnv(sec *secretstore.Store) aigentic.Config {
 		ClaudeCLI: aigentic.ClaudeCLIConfig{
 			Bin:   os.Getenv("AIGENTIC_CLAUDE_BIN"),
 			Model: os.Getenv("AIGENTIC_CLAUDE_CLI_MODEL"),
+			// Per-user subscription: each request runs `claude` with the requesting user's own
+			// setup-token (CLAUDE_CODE_OAUTH_TOKEN) and an isolated CLAUDE_CONFIG_DIR. A user
+			// who hasn't linked their Claude makes claude-cli unavailable (choose falls back).
+			TokenFunc:     sec.OAuthToken,
+			ConfigDirFunc: sec.ConfigDir,
 		},
 		ClaudeAPI: aigentic.ClaudeAPIConfig{
 			BaseURL: os.Getenv("ANTHROPIC_BASE_URL"),
-			// The key comes from the admin-managed store (seeded by ANTHROPIC_API_KEY), read
-			// per request so an admin change takes effect without a restart.
-			KeyFunc: sec.Get,
+			// Per-user key: the requesting user's own Anthropic key (else the shared/global
+			// fallback, else the env bootstrap), read per request so changes take effect live.
+			KeyFunc: sec.Key,
 			Model:   os.Getenv("AIGENTIC_CLAUDE_MODEL"),
 		},
 		Choose: aigentic.ChooseConfig{
@@ -171,4 +177,19 @@ func secretPath() string {
 		return filepath.Join(d, "anthropic.key")
 	}
 	return "/var/lib/aigentic/anthropic.key"
+}
+
+// usersDir is the per-user credential root (api.key + claude-oauth.token + claude/ per user).
+// Defaults to the systemd StateDirectory's users/ subdir; override with AIGENTIC_USERS_DIR.
+func usersDir() string {
+	if p := os.Getenv("AIGENTIC_USERS_DIR"); p != "" {
+		return p
+	}
+	if d := os.Getenv("STATE_DIRECTORY"); d != "" {
+		if i := strings.IndexByte(d, ':'); i >= 0 {
+			d = d[:i]
+		}
+		return filepath.Join(d, "users")
+	}
+	return "/var/lib/aigentic/users"
 }

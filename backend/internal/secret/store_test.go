@@ -9,143 +9,177 @@ import (
 	"testing"
 )
 
-const goodKey = "sk-ant-test-0123456789abcdef" // valid shape: sk-ant- prefix, >= 20 chars
+const (
+	goodKey   = "sk-ant-test-0123456789abcdef"            // valid api-key shape
+	goodKey2  = "sk-ant-user-abcdef0123456789"            // a second, distinct api key
+	goodToken = "claude_token_0123456789abcdef0123456789" // valid setup-token shape
+)
 
-func TestSetGetStatusClear(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "anthropic.key")
-	s := New(path, "")
+func newStore(t *testing.T) (*Store, string, string) {
+	t.Helper()
+	dir := t.TempDir()
+	globalPath := filepath.Join(dir, "anthropic.key")
+	usersDir := filepath.Join(dir, "users")
+	return New(globalPath, usersDir, ""), globalPath, usersDir
+}
 
-	if _, ok := s.Get(); ok {
-		t.Fatal("fresh store must be unconfigured")
-	}
-	if st := s.Status(); st.Configured {
-		t.Fatalf("status configured before Set: %+v", st)
-	}
+// A user's own key wins; without one they fall back to the global admin key, then env.
+func TestKeyPrecedence(t *testing.T) {
+	s, _, _ := newStore(t)
 
-	if err := s.Set(goodKey); err != nil {
-		t.Fatalf("Set: %v", err)
-	}
-	got, ok := s.Get()
-	if !ok || got != goodKey {
-		t.Fatalf("Get = %q ok=%v, want %q true", got, ok, goodKey)
-	}
-
-	// Persisted with restrictive permissions, and the value is the key.
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatalf("stat: %v", err)
-	}
-	if info.Mode().Perm() != 0o600 {
-		t.Errorf("key file mode = %v, want 0600", info.Mode().Perm())
+	// Nothing set anywhere.
+	if _, ok := s.Key("alice"); ok {
+		t.Fatal("no key configured, want not-ok")
 	}
 
-	st := s.Status()
-	if !st.Configured || st.Source != "store" {
-		t.Errorf("status = %+v, want configured store", st)
+	// Global admin key → every user falls back to it.
+	if err := s.SetGlobal(goodKey); err != nil {
+		t.Fatalf("SetGlobal: %v", err)
 	}
-	if strings.Contains(st.Hint, goodKey) || !strings.HasSuffix(st.Hint, goodKey[len(goodKey)-4:]) {
-		t.Errorf("hint %q must mask the key but end in its last 4 chars", st.Hint)
+	if k, ok := s.Key("alice"); !ok || k != goodKey {
+		t.Fatalf("alice Key = %q ok=%v, want global %q", k, ok, goodKey)
 	}
-
-	// A second store over the same path loads the persisted key.
-	if got, ok := New(path, "").Get(); !ok || got != goodKey {
-		t.Errorf("reload Get = %q ok=%v, want persisted key", got, ok)
+	if st := s.UserKeyStatus("alice"); st.Source != "store" {
+		t.Errorf("alice source = %q, want store (shared fallback)", st.Source)
 	}
 
-	if err := s.Clear(); err != nil {
-		t.Fatalf("Clear: %v", err)
+	// Alice sets her own → overrides the global; bob still uses global.
+	if err := s.SetUserKey("alice", goodKey2); err != nil {
+		t.Fatalf("SetUserKey: %v", err)
 	}
-	if _, ok := s.Get(); ok {
-		t.Error("Get after Clear must be unconfigured")
+	if k, _ := s.Key("alice"); k != goodKey2 {
+		t.Errorf("alice Key = %q, want her own %q", k, goodKey2)
 	}
-	if _, err := os.Stat(path); !os.IsNotExist(err) {
-		t.Errorf("key file still present after Clear: %v", err)
+	if st := s.UserKeyStatus("alice"); st.Source != "user" {
+		t.Errorf("alice source = %q, want user", st.Source)
+	}
+	if k, _ := s.Key("bob"); k != goodKey {
+		t.Errorf("bob Key = %q, want global %q", k, goodKey)
+	}
+
+	// Per-user file is 0600 and not the global file.
+	p := filepath.Join(s.usersDir, "alice", "api.key")
+	if info, err := os.Stat(p); err != nil || info.Mode().Perm() != 0o600 {
+		t.Errorf("alice key file mode: %v err=%v, want 0600", info, err)
+	}
+
+	// Clearing alice's own key falls her back to the global.
+	if err := s.ClearUserKey("alice"); err != nil {
+		t.Fatalf("ClearUserKey: %v", err)
+	}
+	if k, _ := s.Key("alice"); k != goodKey {
+		t.Errorf("after clear, alice Key = %q, want global", k)
 	}
 }
 
-// The env key bootstraps the store; an admin Set overrides it (source flips to "store"); a
-// Clear falls back to the env key again.
-func TestEnvBootstrapOverrideFallback(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "anthropic.key")
-	envKey := "sk-ant-env-0123456789abcdef"
-	s := New(path, envKey)
-
-	if got, ok := s.Get(); !ok || got != envKey {
-		t.Fatalf("env bootstrap Get = %q ok=%v, want env key", got, ok)
+// Env bootstrap feeds the global tier when no file is set.
+func TestEnvBootstrap(t *testing.T) {
+	dir := t.TempDir()
+	s := New(filepath.Join(dir, "anthropic.key"), filepath.Join(dir, "users"), "sk-ant-env-0123456789abcdef")
+	if k, ok := s.Key("anyone"); !ok || !strings.HasPrefix(k, "sk-ant-env") {
+		t.Fatalf("env bootstrap Key = %q ok=%v", k, ok)
 	}
-	if st := s.Status(); st.Source != "env" {
+	if st := s.UserKeyStatus("anyone"); st.Source != "env" {
 		t.Errorf("source = %q, want env", st.Source)
 	}
+}
 
-	if err := s.Set(goodKey); err != nil {
-		t.Fatalf("Set: %v", err)
+// Subscription token: link, read, status (masked), unlink.
+func TestTokenLinkUnlink(t *testing.T) {
+	s, _, _ := newStore(t)
+
+	if st := s.TokenStatus("alice"); st.Linked {
+		t.Fatal("token not linked yet")
 	}
-	if got, _ := s.Get(); got != goodKey {
-		t.Errorf("after Set Get = %q, want stored key", got)
+	if err := s.LinkToken("alice", goodToken); err != nil {
+		t.Fatalf("LinkToken: %v", err)
 	}
-	if st := s.Status(); st.Source != "store" {
-		t.Errorf("source after Set = %q, want store", st.Source)
+	if tok, ok := s.OAuthToken("alice"); !ok || tok != goodToken {
+		t.Fatalf("OAuthToken = %q ok=%v, want %q", tok, ok, goodToken)
+	}
+	st := s.TokenStatus("alice")
+	if !st.Linked || st.Hint == "" || strings.Contains(st.Hint, goodToken) {
+		t.Fatalf("token status leaks or wrong: %+v", st)
 	}
 
-	if err := s.Clear(); err != nil {
-		t.Fatalf("Clear: %v", err)
+	// ConfigDir is created 0700 under the user's dir.
+	cfg, err := s.ConfigDir("alice")
+	if err != nil {
+		t.Fatalf("ConfigDir: %v", err)
 	}
-	if got, ok := s.Get(); !ok || got != envKey {
-		t.Errorf("after Clear Get = %q ok=%v, want env fallback", got, ok)
+	if info, err := os.Stat(cfg); err != nil || !info.IsDir() {
+		t.Fatalf("config dir not created: %v", err)
+	}
+
+	if err := s.UnlinkToken("alice"); err != nil {
+		t.Fatalf("UnlinkToken: %v", err)
+	}
+	if _, ok := s.OAuthToken("alice"); ok {
+		t.Error("token still present after unlink")
+	}
+	if _, err := os.Stat(cfg); !os.IsNotExist(err) {
+		t.Error("config dir should be removed on unlink")
 	}
 }
 
-// A short/placeholder env key must never be echoed whole by Status — mask fully.
-func TestStatusMasksShortEnvKey(t *testing.T) {
-	s := New("", "test") // env-only bootstrap, value too short to reveal a tail
-	st := s.Status()
-	if !st.Configured || st.Source != "env" {
-		t.Fatalf("status = %+v, want configured env", st)
+// Validation: bad api keys and bad tokens are rejected and not persisted; an api key is not a
+// valid token and vice-versa.
+func TestValidation(t *testing.T) {
+	s, _, _ := newStore(t)
+	for _, bad := range []string{"", "garbage", "sk-ant-short", "Bearer x"} {
+		if err := s.SetUserKey("alice", bad); !errors.Is(err, ErrInvalidKey) {
+			t.Errorf("SetUserKey(%q) = %v, want ErrInvalidKey", bad, err)
+		}
 	}
-	if st.Hint != "…" || strings.Contains(st.Hint, "test") {
-		t.Fatalf("hint %q must not reveal a short key", st.Hint)
+	for _, bad := range []string{"", "short", goodKey /* an api key is not a token */, "has space inside it xx"} {
+		if err := s.LinkToken("alice", bad); !errors.Is(err, ErrInvalidToken) {
+			t.Errorf("LinkToken(%q) = %v, want ErrInvalidToken", bad, err)
+		}
+	}
+	if _, ok := s.Key("alice"); ok {
+		t.Error("rejected sets must not configure anything")
 	}
 }
 
-// Set and Clear must be safe under concurrent admin requests (run with -race): the on-disk
-// key and the in-memory key are updated atomically together, so they never diverge.
-func TestConcurrentSetClear(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "anthropic.key")
-	s := New(path, "")
+// A Subject that isn't a safe path segment is rejected — never written to disk.
+func TestSafeSubjectRejected(t *testing.T) {
+	s, _, usersDir := newStore(t)
+	for _, bad := range []string{"..", "../etc", "a/b", ".hidden", ""} {
+		if err := s.SetUserKey(bad, goodKey); !errors.Is(err, ErrBadSubject) {
+			t.Errorf("SetUserKey(subject=%q) = %v, want ErrBadSubject", bad, err)
+		}
+		if err := s.LinkToken(bad, goodToken); !errors.Is(err, ErrBadSubject) {
+			t.Errorf("LinkToken(subject=%q) = %v, want ErrBadSubject", bad, err)
+		}
+	}
+	// Nothing escaped the users dir.
+	if entries, _ := os.ReadDir(usersDir); len(entries) != 0 {
+		t.Errorf("bad subjects created %d dir entries, want 0", len(entries))
+	}
+}
+
+// Mask never returns the whole secret.
+func TestMaskNeverLeaks(t *testing.T) {
+	if h := mask(goodKey); strings.Contains(h, goodKey) || !strings.HasSuffix(h, goodKey[len(goodKey)-4:]) {
+		t.Errorf("api mask %q leaks or lacks last4", h)
+	}
+	if h := mask(goodToken); strings.Contains(h, goodToken) || !strings.HasPrefix(h, "claude_token_…") {
+		t.Errorf("token mask %q wrong", h)
+	}
+	if mask("short") != "…" {
+		t.Error("short value must be fully masked")
+	}
+}
+
+// Concurrent per-user writes/reads are race-free (run with -race).
+func TestConcurrentPerUser(t *testing.T) {
+	s, _, _ := newStore(t)
 	var wg sync.WaitGroup
-	for i := 0; i < 25; i++ {
-		wg.Add(2)
-		go func() { defer wg.Done(); _ = s.Set(goodKey) }()
-		go func() { defer wg.Done(); _ = s.Clear() }()
+	for i := 0; i < 20; i++ {
+		wg.Add(3)
+		go func() { defer wg.Done(); _ = s.SetUserKey("alice", goodKey) }()
+		go func() { defer wg.Done(); _ = s.LinkToken("alice", goodToken) }()
+		go func() { defer wg.Done(); _, _ = s.Key("alice") }()
 	}
 	wg.Wait()
-
-	got, ok := s.Get()
-	b, err := os.ReadFile(path)
-	switch {
-	case ok && err == nil:
-		if strings.TrimSpace(string(b)) != got {
-			t.Fatalf("disk/memory diverged: file=%q mem=%q", strings.TrimSpace(string(b)), got)
-		}
-	case ok && os.IsNotExist(err):
-		t.Fatalf("memory holds key %q but file is absent", got)
-	case !ok && err == nil:
-		t.Fatalf("memory cleared but file still present: %q", strings.TrimSpace(string(b)))
-	}
-}
-
-func TestSetRejectsBadKey(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "anthropic.key")
-	s := New(path, "")
-	for _, bad := range []string{"", "garbage", "sk-ant-short", "Bearer sk-ant-xxxxxxxxxxxxx"} {
-		if err := s.Set(bad); !errors.Is(err, ErrInvalidKey) {
-			t.Errorf("Set(%q) err = %v, want ErrInvalidKey", bad, err)
-		}
-	}
-	if _, ok := s.Get(); ok {
-		t.Error("a rejected Set must not configure the store")
-	}
-	if _, err := os.Stat(path); !os.IsNotExist(err) {
-		t.Error("a rejected Set must not write the file")
-	}
 }
