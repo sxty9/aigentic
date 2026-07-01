@@ -151,11 +151,13 @@ function ClaudeSlot({ api, ui }: Pick<ServiceContextProps, 'api' | 'ui'>) {
         </Stack>
         <Text color="secondary">
           Uses your Claude Pro/Max subscription for the claude-cli engine — no API cost. One-time
-          setup: on your own computer run the command below, sign in, then paste the token it
-          prints (it stays valid about a year).
+          setup: on a computer where the <Text as="span" className="font-mono">claude</Text> CLI is
+          installed and you can sign into your Claude account (your laptop/desktop — not this
+          server), run the command below, sign in, then paste the <Text as="span" className="font-mono">sk-ant-oat…</Text>{' '}
+          token it prints (valid about a year).
         </Text>
         <CodeBlock code="claude setup-token" />
-        <PasswordInput value={token} onChange={(e) => setToken(e.target.value)} placeholder="claude_token_…" />
+        <PasswordInput value={token} onChange={(e) => setToken(e.target.value)} placeholder="sk-ant-oat…" />
         <Stack direction="row" gap={2}>
           <Button variant="primary" loading={busy} disabled={!token.trim()} onClick={link}>
             {cur?.linked ? 'Replace token' : 'Link Claude'}

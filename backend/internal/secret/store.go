@@ -21,7 +21,9 @@ import (
 )
 
 const (
-	keyPrefix          = "sk-ant-"
+	keyPrefix          = "sk-ant-"    // shared Anthropic prefix (API keys AND OAuth tokens)
+	apiKeyPrefix       = "sk-ant-api" // Anthropic API keys
+	oauthPrefix        = "sk-ant-oat" // `claude setup-token` subscription OAuth tokens
 	apiKeyFile         = "api.key"
 	oauthTokenFile     = "claude-oauth.token"
 	claudeConfigSubdir = "claude"
@@ -73,7 +75,7 @@ type Status struct {
 // TokenStatus reports whether a user has linked a Claude subscription token (masked).
 type TokenStatus struct {
 	Linked bool   `json:"linked"`
-	Hint   string `json:"hint,omitempty"` // masked: claude_token_…last4
+	Hint   string `json:"hint,omitempty"` // masked: sk-ant-oat…last4
 }
 
 // Key returns the API key to bill a request from `subject`: the user's own key if set, else
@@ -306,16 +308,21 @@ func writeFileAtomic(path, content string) error {
 
 // --- validation + masking ---
 
-func validKey(k string) bool { return strings.HasPrefix(k, keyPrefix) && len(k) >= 20 }
+// validKey accepts an Anthropic API key (sk-ant-api…), but NOT a subscription OAuth token
+// (sk-ant-oat…), which shares the sk-ant- prefix but belongs in the claude-oauth slot.
+func validKey(k string) bool {
+	return strings.HasPrefix(k, keyPrefix) && !strings.HasPrefix(k, oauthPrefix) && len(k) >= 20
+}
 
 // validToken accepts a Claude setup-token: a single opaque string, no whitespace, reasonably
-// long, and NOT an API key (that belongs in the api.key slot). The exact prefix can vary by
-// CLI version, so we don't hard-require one.
+// long. `claude setup-token` emits an OAuth token that starts with sk-ant-oat… — i.e. it SHARES
+// the sk-ant- prefix with API keys, so we must NOT reject on that. We only reject a plain API key
+// (sk-ant-api…) pasted into the wrong slot; any other plausible token is accepted.
 func validToken(t string) bool {
 	if len(t) < 20 || strings.ContainsAny(t, " \t\r\n") {
 		return false
 	}
-	return !strings.HasPrefix(t, keyPrefix)
+	return !strings.HasPrefix(t, apiKeyPrefix)
 }
 
 // mask reveals only a recognizable prefix and the last 4 chars; a value too short to reveal a
@@ -326,10 +333,10 @@ func mask(k string) string {
 	}
 	last := k[len(k)-4:]
 	switch {
+	case strings.HasPrefix(k, oauthPrefix):
+		return oauthPrefix + "…" + last
 	case strings.HasPrefix(k, keyPrefix):
 		return keyPrefix + "…" + last
-	case strings.HasPrefix(k, "claude_token_"):
-		return "claude_token_…" + last
 	default:
 		return "…" + last
 	}

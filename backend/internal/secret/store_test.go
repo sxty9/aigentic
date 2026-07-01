@@ -12,7 +12,7 @@ import (
 const (
 	goodKey   = "sk-ant-test-0123456789abcdef"            // valid api-key shape
 	goodKey2  = "sk-ant-user-abcdef0123456789"            // a second, distinct api key
-	goodToken = "claude_token_0123456789abcdef0123456789" // valid setup-token shape
+	goodToken = "sk-ant-oat01-0123456789abcdef0123456789" // valid setup-token (OAuth) shape
 )
 
 func newStore(t *testing.T) (*Store, string, string) {
@@ -131,13 +131,36 @@ func TestValidation(t *testing.T) {
 			t.Errorf("SetUserKey(%q) = %v, want ErrInvalidKey", bad, err)
 		}
 	}
-	for _, bad := range []string{"", "short", goodKey /* an api key is not a token */, "has space inside it xx"} {
+	for _, bad := range []string{"", "short", "sk-ant-api03-0123456789abcdef" /* a real API key is not a token */, "has space inside it xx"} {
 		if err := s.LinkToken("alice", bad); !errors.Is(err, ErrInvalidToken) {
 			t.Errorf("LinkToken(%q) = %v, want ErrInvalidToken", bad, err)
 		}
 	}
 	if _, ok := s.Key("alice"); ok {
 		t.Error("rejected sets must not configure anything")
+	}
+}
+
+// The regression this guards: `claude setup-token` emits an OAuth token starting with
+// sk-ant-oat…, which shares the sk-ant- prefix with API keys. It must be accepted in the token
+// slot (previously rejected), while a real API key (sk-ant-api…) must be rejected there — and
+// symmetrically for the key slot.
+func TestOAuthTokenVsApiKey(t *testing.T) {
+	s, _, _ := newStore(t)
+	const oauth = "sk-ant-oat01-0123456789abcdefABCDEF"
+	const apiKey = "sk-ant-api03-0123456789abcdefABCDEF"
+
+	if err := s.LinkToken("alice", oauth); err != nil {
+		t.Errorf("LinkToken(sk-ant-oat…) = %v, want nil (setup-tokens are OAuth tokens)", err)
+	}
+	if err := s.LinkToken("alice", apiKey); !errors.Is(err, ErrInvalidToken) {
+		t.Errorf("LinkToken(sk-ant-api…) = %v, want ErrInvalidToken (API key in the token slot)", err)
+	}
+	if err := s.SetUserKey("bob", apiKey); err != nil {
+		t.Errorf("SetUserKey(sk-ant-api…) = %v, want nil", err)
+	}
+	if err := s.SetUserKey("bob", oauth); !errors.Is(err, ErrInvalidKey) {
+		t.Errorf("SetUserKey(sk-ant-oat…) = %v, want ErrInvalidKey (OAuth token in the key slot)", err)
 	}
 }
 
@@ -163,7 +186,7 @@ func TestMaskNeverLeaks(t *testing.T) {
 	if h := mask(goodKey); strings.Contains(h, goodKey) || !strings.HasSuffix(h, goodKey[len(goodKey)-4:]) {
 		t.Errorf("api mask %q leaks or lacks last4", h)
 	}
-	if h := mask(goodToken); strings.Contains(h, goodToken) || !strings.HasPrefix(h, "claude_token_…") {
+	if h := mask(goodToken); strings.Contains(h, goodToken) || !strings.HasPrefix(h, "sk-ant-oat…") {
 		t.Errorf("token mask %q wrong", h)
 	}
 	if mask("short") != "…" {
