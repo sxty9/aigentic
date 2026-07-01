@@ -2,10 +2,12 @@ package aigentic
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
@@ -39,7 +41,7 @@ func anthropicStub(text string) *httptest.Server {
 }
 
 func fakeCLI(result string) ExecRunner {
-	return func(_ context.Context, _ string, _ []string, _ string, _ []string) ([]byte, error) {
+	return func(_ context.Context, _ string, _ []string, _ string, _ []string, _ string) ([]byte, error) {
 		return json.Marshal(map[string]any{
 			"type":     "result",
 			"result":   result,
@@ -451,7 +453,7 @@ func TestChooseFallsBackWhenOllamaErrors(t *testing.T) {
 
 	reg := newReg(t, Config{
 		Ollama: OllamaConfig{BaseURL: ollamaBad.URL},
-		ClaudeCLI: ClaudeCLIConfig{Run: func(context.Context, string, []string, string, []string) ([]byte, error) {
+		ClaudeCLI: ClaudeCLIConfig{Run: func(context.Context, string, []string, string, []string, string) ([]byte, error) {
 			return nil, errors.New("no cli")
 		}},
 		ClaudeAPI: ClaudeAPIConfig{BaseURL: an.URL, APIKey: "k"},
@@ -517,7 +519,7 @@ func envHas(env []string, want string) bool {
 // unlinked user is unavailable; and a config-dir failure fails CLOSED (never the shared dir).
 func TestClaudeCLIPerUser(t *testing.T) {
 	var gotEnv []string
-	capRun := func(_ context.Context, _ string, _ []string, _ string, extraEnv []string) ([]byte, error) {
+	capRun := func(_ context.Context, _ string, _ []string, _ string, extraEnv []string, _ string) ([]byte, error) {
 		gotEnv = extraEnv
 		return json.Marshal(map[string]any{"type": "result", "result": "ok", "is_error": false, "usage": map[string]int{"input_tokens": 1, "output_tokens": 1}})
 	}
@@ -547,7 +549,7 @@ func TestClaudeCLIPerUser(t *testing.T) {
 // (caught before exec), and the applied level is echoed back on the Result.
 func TestClaudeCLIEffort(t *testing.T) {
 	var gotArgs []string
-	capRun := func(_ context.Context, _ string, args []string, _ string, _ []string) ([]byte, error) {
+	capRun := func(_ context.Context, _ string, args []string, _ string, _ []string, _ string) ([]byte, error) {
 		gotArgs = args
 		return json.Marshal(map[string]any{"type": "result", "result": "ok", "is_error": false, "usage": map[string]int{"input_tokens": 1, "output_tokens": 1}})
 	}
@@ -564,6 +566,44 @@ func TestClaudeCLIEffort(t *testing.T) {
 	reg = newReg(t, Config{ClaudeCLI: ClaudeCLIConfig{Run: capRun}})
 	if _, err := route(reg, KindClaudeCLI, Request{Prompt: "hi", Claude: &ClaudeOptions{Effort: "bogus"}}); !errors.Is(err, prizm.ErrInvalidRequest) {
 		t.Fatalf("bad effort: err=%v want ErrInvalidRequest", err)
+	}
+}
+
+// claude-cli materializes attached files into a real temp work dir so the agentic CLI can open
+// them (fixing "the file doesn't exist on disk"): the runner is invoked with a non-empty dir
+// containing the decoded files, read-only tools are allowed, and the dir is cleaned up after.
+func TestClaudeCLIMaterializesFiles(t *testing.T) {
+	var gotDir string
+	var gotArgs []string
+	var wrote []string
+	capRun := func(_ context.Context, _ string, args []string, _ string, _ []string, dir string) ([]byte, error) {
+		gotArgs, gotDir = args, dir
+		if dir != "" {
+			if ents, err := os.ReadDir(dir); err == nil {
+				for _, e := range ents {
+					wrote = append(wrote, e.Name())
+				}
+			}
+		}
+		return json.Marshal(map[string]any{"type": "result", "result": "ok", "is_error": false, "usage": map[string]int{"input_tokens": 1, "output_tokens": 1}})
+	}
+	reg := newReg(t, Config{ClaudeCLI: ClaudeCLIConfig{Run: capRun}})
+	img := base64.StdEncoding.EncodeToString([]byte{0x89, 'P', 'N', 'G'})
+	in := Request{Prompt: "what is this?", Inline: []InlineFile{
+		{Path: "me/test/notes.txt", Content: "hello"},
+		{Path: "me/test/IMG_0177.jpeg", Content: img, MediaType: "image/jpeg"},
+	}}
+	if out := mustRoute(t, reg, KindClaudeCLI, in); out.Output != "ok" {
+		t.Fatalf("output=%q", out.Output)
+	}
+	if gotDir == "" || len(wrote) != 2 {
+		t.Fatalf("materialized dir=%q files=%v, want a dir with 2 files", gotDir, wrote)
+	}
+	if !argPair(gotArgs, "--allowedTools", "Read") {
+		t.Fatalf("read-only tools not allowed: %v", gotArgs)
+	}
+	if _, err := os.Stat(gotDir); !os.IsNotExist(err) {
+		t.Fatalf("work dir %q not cleaned up after the run", gotDir)
 	}
 }
 

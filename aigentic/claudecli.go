@@ -3,10 +3,12 @@ package aigentic
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"github.com/sxty9/prizm/prizm"
@@ -15,11 +17,14 @@ import (
 // ExecRunner runs a command with stdin + extra env and returns its stdout. Injectable so tests
 // can fake the CLI without a real `claude` binary or subscription login. extraEnv carries the
 // per-user CLAUDE_CONFIG_DIR / CLAUDE_CODE_OAUTH_TOKEN (appended to the daemon's environment).
-type ExecRunner func(ctx context.Context, name string, args []string, stdin string, extraEnv []string) (stdout []byte, err error)
+type ExecRunner func(ctx context.Context, name string, args []string, stdin string, extraEnv []string, dir string) (stdout []byte, err error)
 
-func defaultExecRunner(ctx context.Context, name string, args []string, stdin string, extraEnv []string) ([]byte, error) {
+func defaultExecRunner(ctx context.Context, name string, args []string, stdin string, extraEnv []string, dir string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Stdin = strings.NewReader(stdin)
+	if dir != "" {
+		cmd.Dir = dir // run in the materialized work dir so the CLI's file tools resolve real paths
+	}
 	if len(extraEnv) > 0 {
 		cmd.Env = append(os.Environ(), extraEnv...)
 	}
@@ -123,12 +128,22 @@ func NewClaudeCLI(cfg ClaudeCLIConfig, lim Limits) prizm.Processor {
 			}
 			args = append(args, "--effort", effort)
 		}
-		prompt, items, truncated, err := assemble(ctx, env, in, lim)
-		if err != nil {
-			return Result{}, err
+		// Claude Code is agentic: it reads the REAL filesystem, not our virtual Samba paths. So
+		// instead of naming/embedding files in the prompt (which made it try to open a path that
+		// "doesn't exist on disk"), materialize the attachments to a private temp dir and run the
+		// CLI THERE — its Read tool then opens them for real (images via vision included).
+		workdir, listing, items, merr := materializeCLIFiles(in)
+		if merr != nil {
+			return Result{}, fmt.Errorf("%w: claude-cli workdir: %v", ErrProcessorUnavailable, merr)
 		}
+		if workdir != "" {
+			defer os.RemoveAll(workdir)
+			// Read-only tools only: the CLI may open/inspect the files, nothing else (no Bash/Write).
+			args = append(args, "--allowedTools", "Read", "Glob", "Grep")
+		}
+		prompt := composeCLIPrompt(listing, in)
 		// Prompt goes on stdin to avoid ARG_MAX with large context.
-		stdout, err := run(ctx, bin, args, prompt, extraEnv)
+		stdout, err := run(ctx, bin, args, prompt, extraEnv, workdir)
 		if err != nil {
 			// A non-zero exit (not logged in, bad flags) reads as unavailability here.
 			return Result{}, fmt.Errorf("%w: %v", ErrProcessorUnavailable, err)
@@ -154,8 +169,87 @@ func NewClaudeCLI(cfg ClaudeCLIConfig, lim Limits) prizm.Processor {
 			InputTokens:  out.Usage.InputTokens,
 			OutputTokens: out.Usage.OutputTokens,
 			TotalTokens:  out.Usage.InputTokens + out.Usage.OutputTokens,
-			Truncated:    truncated,
 		}
 		return Result{Output: out.Result, Engine: KindClaudeCLI, Model: model, Effort: effort, Usage: u, Context: items}, nil
 	})
+}
+
+// materializeCLIFiles writes the request's inline attachments into a fresh private temp dir so
+// the agentic CLI can open them as real files. Returns the dir (caller removes it), a human file
+// listing for the prompt, and provenance items. No inline files → ("", "", nil, nil), so a plain
+// chat turn runs without a work dir.
+func materializeCLIFiles(in Request) (dir, listing string, items []ContextItem, err error) {
+	if len(in.Inline) == 0 {
+		return "", "", nil, nil
+	}
+	dir, err = os.MkdirTemp("", "aigentic-cli-")
+	if err != nil {
+		return "", "", nil, err
+	}
+	var b strings.Builder
+	seen := map[string]int{}
+	for _, f := range in.Inline {
+		name := safeName(f.Path, seen)
+		var data []byte
+		if f.isText() {
+			data = []byte(f.Content)
+		} else {
+			// image/pdf/other rides as base64; decode back to real bytes on disk.
+			d, derr := base64.StdEncoding.DecodeString(f.Content)
+			if derr != nil {
+				items = append(items, ContextItem{Path: f.Path, Skipped: "attachment"})
+				continue
+			}
+			data = d
+		}
+		if len(data) == 0 {
+			// A name-only entry (e.g. an unreadable "other" file type) — nothing to write.
+			items = append(items, ContextItem{Path: f.Path, Skipped: "empty"})
+			continue
+		}
+		if werr := os.WriteFile(filepath.Join(dir, name), data, 0o600); werr != nil {
+			items = append(items, ContextItem{Path: f.Path, Skipped: "denied"})
+			continue
+		}
+		fmt.Fprintf(&b, "- %s\n", name)
+		items = append(items, ContextItem{Path: f.Path, Bytes: len(data)})
+	}
+	return dir, b.String(), items, nil
+}
+
+// safeName reduces a (possibly nested, possibly hostile) virtual path to a single safe filename
+// for the flat work dir, de-duplicating collisions.
+func safeName(p string, seen map[string]int) string {
+	name := filepath.Base(filepath.Clean("/" + p)) // strips dirs and any ".." traversal
+	name = strings.Map(func(r rune) rune {
+		if r == '/' || r == '\\' || r == 0 {
+			return '_'
+		}
+		return r
+	}, name)
+	if name == "" || name == "." {
+		name = "file"
+	}
+	if n := seen[name]; n > 0 {
+		seen[name] = n + 1
+		ext := filepath.Ext(name)
+		return fmt.Sprintf("%s-%d%s", strings.TrimSuffix(name, ext), n, ext)
+	}
+	seen[name] = 1
+	return name
+}
+
+// composeCLIPrompt points the CLI at the materialized files (if any), then the instruction.
+func composeCLIPrompt(listing string, in Request) string {
+	var b strings.Builder
+	if listing != "" {
+		b.WriteString("The following files are in your current working directory — read them as needed to answer:\n")
+		b.WriteString(listing)
+		b.WriteString("\n")
+	}
+	b.WriteString(in.Prompt)
+	if in.OutputFormat != "" && in.OutputFormat != "text" {
+		fmt.Fprintf(&b, "\n\nRespond in %s format.", in.OutputFormat)
+	}
+	return b.String()
 }
