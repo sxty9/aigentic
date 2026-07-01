@@ -5,11 +5,31 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 
 	"github.com/sxty9/prizm/prizm"
 )
+
+// anthropicError extracts the human-readable message from an Anthropic error response body
+// (best-effort, size-bounded), so a non-2xx surfaces WHY (bad model, unsupported effort, …)
+// rather than a bare status code. The body never contains the API key.
+func anthropicError(r io.Reader) string {
+	b, _ := io.ReadAll(io.LimitReader(r, 4<<10))
+	var e struct {
+		Error struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if json.Unmarshal(b, &e) == nil && e.Error.Message != "" {
+		return e.Error.Message
+	}
+	if s := strings.TrimSpace(string(b)); s != "" {
+		return s
+	}
+	return "no error body"
+}
 
 // claudeUserContent builds the user-message content for the Messages API: a plain string when
 // there are no media attachments, else an array of image/document blocks followed by the text
@@ -138,9 +158,11 @@ func NewClaudeAPI(cfg ClaudeAPIConfig, lim Limits) prizm.Processor {
 		case resp.StatusCode == http.StatusUnauthorized:
 			return Result{}, fmt.Errorf("%w: anthropic 401 (bad API key)", ErrProcessorUnavailable)
 		case resp.StatusCode == http.StatusBadRequest:
-			return Result{}, fmt.Errorf("%w: anthropic 400", prizm.ErrInvalidRequest)
+			// Surface Anthropic's reason (e.g. an unknown model, or effort unsupported for the
+			// chosen model) instead of a bare 400, so the failure is actionable.
+			return Result{}, fmt.Errorf("%w: anthropic 400: %s", prizm.ErrInvalidRequest, anthropicError(resp.Body))
 		case resp.StatusCode != http.StatusOK:
-			return Result{}, fmt.Errorf("anthropic: status %d", resp.StatusCode)
+			return Result{}, fmt.Errorf("anthropic: status %d: %s", resp.StatusCode, anthropicError(resp.Body))
 		}
 
 		var out struct {

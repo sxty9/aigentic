@@ -160,7 +160,9 @@ func (s *Server) run(w http.ResponseWriter, r *http.Request, u *auth.User) {
 	case errors.Is(err, prizm.ErrDepthExceeded):
 		writeErr(w, http.StatusUnprocessableEntity, "Sub-prizm recursion limit exceeded")
 	case errors.Is(err, prizm.ErrInvalidRequest):
-		writeErr(w, http.StatusBadRequest, "Invalid request")
+		// Surface the specific reason (e.g. Anthropic's "model not found" / effort unsupported)
+		// so a bad model/effort combination is actionable, not a bare "Invalid request".
+		writeErr(w, http.StatusBadRequest, "Invalid request: "+err.Error())
 	case errors.Is(err, aigentic.ErrProcessorUnavailable):
 		writeErr(w, http.StatusServiceUnavailable, "The selected engine is unavailable")
 	case errors.Is(err, prizm.ErrNoSpawner):
@@ -313,7 +315,7 @@ func (s *Server) modelsList(w http.ResponseWriter, r *http.Request, _ *auth.User
 		"claude": []map[string]string{
 			{"id": "claude-sonnet-4-6", "label": "Sonnet"},
 			{"id": "claude-opus-4-8", "label": "Opus"},
-			{"id": "claude-haiku-4-5", "label": "Haiku"},
+			{"id": "claude-haiku-4-5-20251001", "label": "Haiku"},
 		},
 		"ollama": []string{},
 	}
