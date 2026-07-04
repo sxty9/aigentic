@@ -13,6 +13,7 @@ import {
   type TextPayload,
 } from '@holistic/ui';
 import { EnginePicker, pickerFields, usePicker } from './EnginePicker';
+import { bytesToBase64, cleanOutput, type InlinePart } from './aiFiles';
 import { CHAT_SEED_KEY, type AigenticRequest, type ChatSeed, type RunResponse } from './types';
 
 // Bound the payload: Anthropic caps a request at ~32 MB; keep well under it and under a sane
@@ -24,17 +25,10 @@ const q = (p: string) => encodeURIComponent(p);
 
 // --- gather the folder's files (recursing folders), as inline parts ------------------------
 
-// fetchBase64 reads raw bytes via the Files app's own client and base64-encodes them in the
-// browser (chunked, to avoid call-stack limits on large files).
+// fetchBase64 reads raw bytes via the Files app's own client and base64-encodes them.
 async function fetchBase64(api: ServiceApiClient, path: string): Promise<string> {
   const res = await api.raw(`fs/raw?path=${q(path)}`);
-  const bytes = new Uint8Array(await res.arrayBuffer());
-  let binary = '';
-  const chunk = 0x8000;
-  for (let i = 0; i < bytes.length; i += chunk) {
-    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
-  }
-  return btoa(binary);
+  return bytesToBase64(new Uint8Array(await res.arrayBuffer()));
 }
 
 // expand flattens a list of entries, recursing into folders, capped at MAX_FILES.
@@ -57,8 +51,6 @@ async function expand(entries: FileEntry[], api: ServiceApiClient, depth = 0): P
   return out.slice(0, MAX_FILES);
 }
 
-type InlinePart = { path: string; content: string; mediaType?: string };
-
 // toInline turns a file into an inline part: text → content; image/PDF → base64 + mediaType;
 // anything else → a name-only entry so the AI still "counts" it.
 async function toInline(api: ServiceApiClient, e: FileEntry): Promise<InlinePart | null> {
@@ -78,14 +70,6 @@ async function toInline(api: ServiceApiClient, e: FileEntry): Promise<InlinePart
   } catch {
     return null;
   }
-}
-
-// cleanOutput strips the context tags the backend wraps files in, before rendering.
-function cleanOutput(s: string): string {
-  return s
-    .replace(/<\/?(file|attachment)\b[^>]*>/g, '')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
 }
 
 // --- the panel -----------------------------------------------------------------------------

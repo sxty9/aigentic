@@ -1,16 +1,32 @@
-import { BoltIcon, registerFolderAction, userHasRight, type ServicePlugin } from '@holistic/ui';
+import { BoltIcon, registerFolderAction, registerViewerAction, userHasRight, type ServicePlugin } from '@holistic/ui';
 import { Dashboard } from './Dashboard';
 import { AskAiPanel } from './AskAiPanel';
+import { AskAiFilePanel } from './AskAiFilePanel';
+import { aiReadable } from './aiFiles';
 
-// The end-user AI feature is delivered ENTIRELY by aigentic, contributed into the shared Files
-// toolbar as a folder-level action (no Samba code knows about it). Visible to anyone holding
-// the run right (admins always); the paid path is enforced server-side.
+// The end-user AI feature is delivered ENTIRELY by aigentic, contributed into two shared surfaces
+// (no Files/Mail code knows about it). Visible to anyone holding the run right (admins always);
+// the paid path is enforced server-side.
+//
+// 1) Folder-level action on the Files toolbar — asks about a folder / multi-file selection.
 registerFolderAction({
   id: 'aigentic.ask',
   label: 'Ask AI',
   icon: BoltIcon,
   visible: (user) => userHasRight(user, 'hp_aigentic_run'),
   Panel: AskAiPanel,
+});
+
+// 2) File-level action inside the shared FilePreview — asks about the ONE displayed file, wherever
+// it is previewed (Files, Mail attachments, …). Gated to types the AI can actually read; the host
+// supplies the file content, so this needs no fileshare access of its own.
+registerViewerAction({
+  id: 'aigentic.ask.file',
+  label: 'Ask AI',
+  icon: BoltIcon,
+  visible: (user) => userHasRight(user, 'hp_aigentic_run'),
+  applies: aiReadable,
+  Panel: AskAiFilePanel,
 });
 
 // The aigentic tab is PER-USER self-service: anyone with the run right opens it to link their
