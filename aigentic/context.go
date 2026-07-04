@@ -98,14 +98,38 @@ func assemble(ctx context.Context, env prizm.Env, in Request, lim Limits) (promp
 		items = append(items, ContextItem{Path: f.Path, Ref: ref, Bytes: len(data)})
 	}
 
-	prompt = composePrompt(b.String(), in)
+	prompt = composePrompt(substrateGuidance(env.Grave), b.String(), in)
 	return prompt, items, truncated, nil
 }
 
-// composePrompt assembles the final prompt: an optional context block, the instruction,
-// and an output-format hint.
-func composePrompt(contextBlock string, in Request) string {
+// Describer is an optional capability a graveyard backend MAY implement to supply a
+// substrate-guidance string. It is injected as a preamble into the prompt of EVERY
+// engine: the ollama and claude-api leaves inject it via composePrompt (both call
+// assemble), and the claude-cli leaf — which builds its own prompt and does not call
+// assemble — injects it via composeCLIPrompt. The scheme backend implements it —
+// telling the agent that the data pool is clearly structured and that every write
+// MUST carry a clear structural description; the memory and lakearch backends do
+// not, so nothing is injected for them. Mirrors the Deletable/Listable pattern.
+type Describer interface{ Describe() string }
+
+// substrateGuidance returns the backend's guidance string if it implements Describer,
+// else "" (no injection). It takes any so context.go needs no graveyard import.
+func substrateGuidance(g any) string {
+	if d, ok := g.(Describer); ok {
+		return d.Describe()
+	}
+	return ""
+}
+
+// composePrompt assembles the final prompt: an optional substrate-guidance preamble
+// (from a Describer graveyard, e.g. scheme), an optional context block, the
+// instruction, and an output-format hint.
+func composePrompt(guidance, contextBlock string, in Request) string {
 	var b strings.Builder
+	if guidance != "" {
+		b.WriteString(guidance)
+		b.WriteString("\n\n")
+	}
 	if contextBlock != "" {
 		b.WriteString("Context files:\n")
 		b.WriteString(contextBlock)

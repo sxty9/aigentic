@@ -141,7 +141,7 @@ func NewClaudeCLI(cfg ClaudeCLIConfig, lim Limits) prizm.Processor {
 			// Read-only tools only: the CLI may open/inspect the files, nothing else (no Bash/Write).
 			args = append(args, "--allowedTools", "Read", "Glob", "Grep")
 		}
-		prompt := composeCLIPrompt(listing, in)
+		prompt := composeCLIPrompt(substrateGuidance(env.Grave), listing, in)
 		// Prompt goes on stdin to avoid ARG_MAX with large context.
 		stdout, err := run(ctx, bin, args, prompt, extraEnv, workdir)
 		if err != nil {
@@ -239,9 +239,16 @@ func safeName(p string, seen map[string]int) string {
 	return name
 }
 
-// composeCLIPrompt points the CLI at the materialized files (if any), then the instruction.
-func composeCLIPrompt(listing string, in Request) string {
+// composeCLIPrompt points the CLI at the materialized files (if any), then the
+// instruction — with an optional substrate-guidance preamble (from a Describer
+// graveyard, e.g. scheme) so the claude-cli leaf gets the same structure guidance
+// as the ollama/claude-api leaves (which inject it via composePrompt).
+func composeCLIPrompt(guidance, listing string, in Request) string {
 	var b strings.Builder
+	if guidance != "" {
+		b.WriteString(guidance)
+		b.WriteString("\n\n")
+	}
 	if listing != "" {
 		b.WriteString("The following files are in your current working directory — read them as needed to answer:\n")
 		b.WriteString(listing)

@@ -11,15 +11,18 @@ import (
 )
 
 // Open returns a graveyard for the named backend. "memory" (the default) is the in-memory
-// stub; "lakearch" is the content-addressed, append-only substrate and requires both the
-// `lakearch` build tag and a writable kernel directory dir.
+// stub; "lakearch" is the content-addressed, append-only substrate (needs the `lakearch`
+// build tag); "scheme" is the mutable, path-addressed, clearly-structured filesystem-tree
+// substrate (needs the `scheme` build tag). Both native substrates require a writable dir.
 func Open(kind, dir string) (graveyard.Graveyard, error) {
 	switch kind {
 	case "", "memory":
 		return graveyard.NewMemory(), nil
 	case "lakearch":
 		return openLakearch(dir)
+	case "scheme":
+		return openScheme(dir)
 	default:
-		return nil, fmt.Errorf("grave: unknown backend %q (want memory|lakearch)", kind)
+		return nil, fmt.Errorf("grave: unknown backend %q (want memory|lakearch|scheme)", kind)
 	}
 }
