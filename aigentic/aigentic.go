@@ -64,6 +64,13 @@ type Limits struct {
 	MaxTokens       int    // answer-token ceiling; 0 => DefaultMaxTokens
 	MaxContextBytes int    // total Paths context budget; 0 => DefaultMaxContextBytes
 	ContextRoot     string // allowlisted root for Paths; "" => DefaultContextRoot
+	// StoreMode treats the graveyard as an owned data store rather than a provenance sink:
+	// per-run context files are NOT written into it, and the substrate-guidance preamble is NOT
+	// injected into prompts. Set when the graveyard belongs to a specific application (e.g.
+	// Mercury's scheme-backed axiom store) that must not be polluted by, or leak its Leitfaden
+	// into, unrelated Ask-AI traffic. Off by default: the graveyard stays a provenance sink and
+	// behaviour is byte-identical to before.
+	StoreMode bool
 }
 
 // Request is THE single aigentic header (Header₁), shared by all four processors and

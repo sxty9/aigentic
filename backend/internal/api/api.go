@@ -18,6 +18,7 @@ import (
 	"github.com/sxty9/aigentic/backend/internal/chatstore"
 	"github.com/sxty9/aigentic/backend/internal/rights"
 	secretstore "github.com/sxty9/aigentic/backend/internal/secret"
+	"github.com/sxty9/prizm/graveyard"
 	"github.com/sxty9/prizm/prizm"
 )
 
@@ -34,6 +35,7 @@ const (
 type Server struct {
 	v            *auth.Verifier
 	reg          *prizm.Registry
+	grave        graveyard.Graveyard                     // the substrate, exposed directly for owned-store use (Mercury's axioms)
 	sec          *secretstore.Store                      // admin-managed Anthropic key; nil disables the secret endpoints
 	ollamaModels func(context.Context) ([]string, error) // lists local ollama models for the picker; nil => none
 	chats        *chatstore.Store                        // per-user chat history; nil disables the /chats endpoints
@@ -41,9 +43,10 @@ type Server struct {
 
 // New builds a server. sec may be nil (the /secret endpoints then report 503); ollamaModels may
 // be nil (the /models endpoint then returns no local models); chats may be nil (the /chats
-// endpoints then report empty / 503).
-func New(v *auth.Verifier, reg *prizm.Registry, sec *secretstore.Store, ollamaModels func(context.Context) ([]string, error), chats *chatstore.Store) *Server {
-	return &Server{v: v, reg: reg, sec: sec, ollamaModels: ollamaModels, chats: chats}
+// endpoints then report empty / 503). grave is the same substrate registered with the processors;
+// the /grave endpoints report 503 for the capabilities the active backend does not implement.
+func New(v *auth.Verifier, reg *prizm.Registry, grave graveyard.Graveyard, sec *secretstore.Store, ollamaModels func(context.Context) ([]string, error), chats *chatstore.Store) *Server {
+	return &Server{v: v, reg: reg, grave: grave, sec: sec, ollamaModels: ollamaModels, chats: chats}
 }
 
 type handler func(w http.ResponseWriter, r *http.Request, u *auth.User)
@@ -74,6 +77,14 @@ func (s *Server) Handler() http.Handler {
 	// user across devices). GET reads the blob; PUT replaces it (CSRF on the write).
 	mux.HandleFunc("GET "+base+"chats", s.guard(rights.GroupRun, false, s.chatsGet))
 	mux.HandleFunc("PUT "+base+"chats", s.guard(rights.GroupRun, true, s.chatsPut))
+	// Graveyard as an owned, path-addressed data store (Mercury's axiom tree over scheme). Same
+	// gate as /run: hp_aigentic_run + CSRF on writes. The handlers report 503 when the active
+	// backend lacks the needed capability (a memory/append-only backend cannot store structured).
+	mux.HandleFunc("GET "+base+"grave/list", s.guard(rights.GroupRun, false, s.graveList))
+	mux.HandleFunc("GET "+base+"grave/get", s.guard(rights.GroupRun, false, s.graveGet))
+	mux.HandleFunc("POST "+base+"grave/put", s.guard(rights.GroupRun, true, s.gravePut))
+	mux.HandleFunc("POST "+base+"grave/move", s.guard(rights.GroupRun, true, s.graveMove))
+	mux.HandleFunc("DELETE "+base+"grave", s.guard(rights.GroupRun, true, s.graveDelete))
 	mux.HandleFunc("GET "+base+"health", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 	})

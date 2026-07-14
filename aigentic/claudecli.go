@@ -141,7 +141,7 @@ func NewClaudeCLI(cfg ClaudeCLIConfig, lim Limits) prizm.Processor {
 			// Read-only tools only: the CLI may open/inspect the files, nothing else (no Bash/Write).
 			args = append(args, "--allowedTools", "Read", "Glob", "Grep")
 		}
-		prompt := composeCLIPrompt(substrateGuidance(env.Grave), listing, in)
+		prompt := composeCLIPrompt(substrateGuidance(lim, env.Grave), listing, in)
 		// Prompt goes on stdin to avoid ARG_MAX with large context.
 		stdout, err := run(ctx, bin, args, prompt, extraEnv, workdir)
 		if err != nil {

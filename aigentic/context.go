@@ -8,6 +8,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/sxty9/prizm/graveyard"
 	"github.com/sxty9/prizm/prizm"
 )
 
@@ -52,7 +53,7 @@ func assemble(ctx context.Context, env prizm.Env, in Request, lim Limits) (promp
 				}
 				continue
 			}
-			ref, perr := env.Grave.Put(ctx, "", data)
+			ref, perr := putProvenance(ctx, env, lim, data)
 			if perr != nil {
 				return "", nil, false, fmt.Errorf("graveyard put %q: %w", f.rel, perr)
 			}
@@ -89,7 +90,7 @@ func assemble(ctx context.Context, env prizm.Env, in Request, lim Limits) (promp
 			}
 			continue
 		}
-		ref, perr := env.Grave.Put(ctx, "", data)
+		ref, perr := putProvenance(ctx, env, lim, data)
 		if perr != nil {
 			return "", nil, false, fmt.Errorf("graveyard put inline %q: %w", f.Path, perr)
 		}
@@ -98,8 +99,20 @@ func assemble(ctx context.Context, env prizm.Env, in Request, lim Limits) (promp
 		items = append(items, ContextItem{Path: f.Path, Ref: ref, Bytes: len(data)})
 	}
 
-	prompt = composePrompt(substrateGuidance(env.Grave), b.String(), in)
+	prompt = composePrompt(substrateGuidance(lim, env.Grave), b.String(), in)
 	return prompt, items, truncated, nil
+}
+
+// putProvenance records a context datum in the graveyard for content-addressed provenance —
+// unless StoreMode is set, in which case the graveyard is an owned application store and must not
+// receive per-run junk. Skipping the write is behaviour-preserving: no processor ever reads these
+// refs back (Grave.Get has no callers), so the returned Ref is provenance-only and an empty Ref
+// under StoreMode changes nothing the caller can observe.
+func putProvenance(ctx context.Context, env prizm.Env, lim Limits, data []byte) (graveyard.Ref, error) {
+	if lim.StoreMode {
+		return "", nil
+	}
+	return env.Grave.Put(ctx, "", data)
 }
 
 // Describer is an optional capability a graveyard backend MAY implement to supply a
@@ -112,9 +125,14 @@ func assemble(ctx context.Context, env prizm.Env, in Request, lim Limits) (promp
 // not, so nothing is injected for them. Mirrors the Deletable/Listable pattern.
 type Describer interface{ Describe() string }
 
-// substrateGuidance returns the backend's guidance string if it implements Describer,
-// else "" (no injection). It takes any so context.go needs no graveyard import.
-func substrateGuidance(g any) string {
+// substrateGuidance returns the backend's guidance string if it implements Describer, else ""
+// (no injection). Under StoreMode nothing is injected: the graveyard belongs to a specific
+// application (e.g. Mercury's axiom store) and its Leitfaden must not leak into unrelated Ask-AI
+// traffic. It takes any for g so context.go needs no graveyard import.
+func substrateGuidance(lim Limits, g any) string {
+	if lim.StoreMode {
+		return ""
+	}
 	if d, ok := g.(Describer); ok {
 		return d.Describe()
 	}

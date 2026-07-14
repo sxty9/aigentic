@@ -92,11 +92,28 @@ ensure_go() {
   command -v go >/dev/null || die "Go install failed" 4
 }
 
+# aigentic's graveyard substrate is scheme (a Rust, mutable, path-addressed filesystem tree),
+# linked in via cgo behind the `scheme` build tag. SCHEME_DIR points at the scheme checkout (a
+# sibling repo by default); its FFI staticlib is built from source so the build is reproducible and
+# carries no vendored binary. Override SCHEME_LDFLAGS to link a prebuilt lib from elsewhere.
+SCHEME_DIR="${SCHEME_DIR:-$(cd "$REPO_ROOT/../scheme" 2>/dev/null && pwd)}"
+
+ensure_scheme() {
+  [ -n "$SCHEME_DIR" ] && [ -d "$SCHEME_DIR" ] || die "scheme checkout not found (set SCHEME_DIR)" 5
+  command -v cargo >/dev/null || die "cargo (Rust) required to build the scheme FFI" 6
+  log "building scheme FFI (libscheme_ffi.a)..."
+  ( cd "$SCHEME_DIR" && cargo build --release -p scheme-ffi >/dev/null )
+}
+
 build_daemon() {
   ensure_go
-  log "building ${SERVICE_ID}d..."
+  ensure_scheme
+  log "building ${SERVICE_ID}d (cgo, -tags scheme)..."
   install -d -o "$SERVICE_USER" -g "$SERVICE_USER" -m 0755 "$SERVICE_APP" "$SERVICE_APP/bin"
-  ( cd "$REPO_ROOT/backend" && GOCACHE="/tmp/${SERVICE_ID}-gocache" go build -o "$DAEMON_BIN" "./cmd/${SERVICE_ID}d" )
+  ( cd "$REPO_ROOT/backend" \
+      && GOCACHE="/tmp/${SERVICE_ID}-gocache" CGO_ENABLED=1 \
+         ${SCHEME_LDFLAGS:+CGO_LDFLAGS="$SCHEME_LDFLAGS"} \
+         go build -tags scheme -o "$DAEMON_BIN" "./cmd/${SERVICE_ID}d" )
   chown -R "$SERVICE_USER:$SERVICE_USER" "$SERVICE_APP"
 }
 

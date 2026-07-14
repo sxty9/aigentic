@@ -63,7 +63,7 @@ func main() {
 	chats := chatstore.New(usersDir())
 
 	srv := &http.Server{
-		Handler: api.New(v, reg, sec, func(ctx context.Context) ([]string, error) {
+		Handler: api.New(v, reg, g, sec, func(ctx context.Context) ([]string, error) {
 			return aigentic.OllamaModels(ctx, ollamaConfig())
 		}, chats).Handler(),
 		ReadHeaderTimeout: 5 * time.Second,

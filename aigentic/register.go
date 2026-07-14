@@ -27,7 +27,12 @@ func (cfg Config) limits() Limits {
 	if root == "" {
 		root = DefaultContextRoot
 	}
-	return Limits{MaxTokens: cfg.MaxTokens, MaxContextBytes: cfg.MaxContextBytes, ContextRoot: root}
+	return Limits{
+		MaxTokens:       cfg.MaxTokens,
+		MaxContextBytes: cfg.MaxContextBytes,
+		ContextRoot:     root,
+		StoreMode:       os.Getenv("AIGENTIC_GRAVE_MODE") == "store",
+	}
 }
 
 // Register builds the four processors over grave and registers them under their kinds.
