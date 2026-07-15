@@ -79,7 +79,7 @@ func main() {
 	srv := &http.Server{
 		Handler: api.New(v, reg, g, sec, func(ctx context.Context) ([]string, error) {
 			return aigentic.OllamaModels(ctx, ollamaConfig(ctxCap))
-		}, chats).Handler(),
+		}, chats, internalSecret()).Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
@@ -185,6 +185,21 @@ func mcpProvidersFromEnv() map[string]string {
 		return nil
 	}
 	return out
+}
+
+// internalSecret is the shared secret a peer service (hosuto) presents on internal/run to run a turn
+// on a user's behalf. Env AIGENTIC_INTERNAL_SECRET, else the file it points at via *_FILE. Empty =>
+// the internal route is disabled (404), so the feature stays inert until a deployment opts in.
+func internalSecret() string {
+	if v := strings.TrimSpace(os.Getenv("AIGENTIC_INTERNAL_SECRET")); v != "" {
+		return v
+	}
+	if p := strings.TrimSpace(os.Getenv("AIGENTIC_INTERNAL_SECRET_FILE")); p != "" {
+		if b, err := os.ReadFile(p); err == nil {
+			return strings.TrimSpace(string(b))
+		}
+	}
+	return ""
 }
 
 // ollamaConfig builds the shared local-ollama config (engine + classifier + model listing).

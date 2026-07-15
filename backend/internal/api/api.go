@@ -7,6 +7,7 @@ package api
 
 import (
 	"context"
+	"crypto/hmac"
 	"encoding/json"
 	"errors"
 	"io"
@@ -39,14 +40,17 @@ type Server struct {
 	sec          *secretstore.Store                      // admin-managed Anthropic key; nil disables the secret endpoints
 	ollamaModels func(context.Context) ([]string, error) // lists local ollama models for the picker; nil => none
 	chats        *chatstore.Store                        // per-user chat history; nil disables the /chats endpoints
+	internal     string                                  // shared secret for the internal M2M /run; "" disables that route
 }
 
 // New builds a server. sec may be nil (the /secret endpoints then report 503); ollamaModels may
 // be nil (the /models endpoint then returns no local models); chats may be nil (the /chats
-// endpoints then report empty / 503). grave is the same substrate registered with the processors;
-// the /grave endpoints report 503 for the capabilities the active backend does not implement.
-func New(v *auth.Verifier, reg *prizm.Registry, grave graveyard.Graveyard, sec *secretstore.Store, ollamaModels func(context.Context) ([]string, error), chats *chatstore.Store) *Server {
-	return &Server{v: v, reg: reg, grave: grave, sec: sec, ollamaModels: ollamaModels, chats: chats}
+// endpoints then report empty / 503). internalSecret is the shared secret a peer service (hosuto)
+// presents on internal/run to run a turn on a user's behalf — "" disables that route. grave is the
+// same substrate registered with the processors; the /grave endpoints report 503 for the
+// capabilities the active backend does not implement.
+func New(v *auth.Verifier, reg *prizm.Registry, grave graveyard.Graveyard, sec *secretstore.Store, ollamaModels func(context.Context) ([]string, error), chats *chatstore.Store, internalSecret string) *Server {
+	return &Server{v: v, reg: reg, grave: grave, sec: sec, ollamaModels: ollamaModels, chats: chats, internal: internalSecret}
 }
 
 type handler func(w http.ResponseWriter, r *http.Request, u *auth.User)
@@ -59,6 +63,10 @@ func (s *Server) Handler() http.Handler {
 	// Rights-gated write: run a processor. CSRF double-submit guard required. A second,
 	// Kind-aware right (hp_aigentic_api) is enforced inside run() for the paid engines.
 	mux.HandleFunc("POST "+base+"run", s.guard(rights.GroupRun, true, s.run))
+	// Machine-to-machine: a peer service (hosuto's in-game "!ai") runs a turn ON BEHALF OF a user it
+	// names. Auth is a shared secret (contax idiom), NOT a cookie — the subject in the body is resolved
+	// to live OS rights, so the same gates as /run apply. Disabled when no secret is configured.
+	mux.HandleFunc("POST "+base+"internal/run", s.internalRun)
 	// Admin-only: manage the GLOBAL (shared fallback) Anthropic key. Gated on admin; CSRF on
 	// writes; the key value is never returned.
 	mux.HandleFunc("GET "+base+"secret", s.guardAdmin(false, s.secretStatus))
@@ -157,13 +165,54 @@ func (s *Server) run(w http.ResponseWriter, r *http.Request, u *auth.User) {
 	// Subject is server-authoritative: derive it from the holistic identity, never trust
 	// whatever the wire claimed.
 	req.Header.Subject = u.Username
+	s.dispatch(w, r, u, req)
+}
 
+// internalRun runs a turn ON BEHALF OF a named subject for a trusted peer service (hosuto's in-game
+// "!ai"). Auth is the shared internal secret, not a session cookie; the subject named in the body is
+// resolved to a live OS identity, so it is held to EXACTLY the same rights gates as run(). Disabled
+// (404) when no secret is configured. No CSRF — this is a server-to-server call, not a browser.
+func (s *Server) internalRun(w http.ResponseWriter, r *http.Request) {
+	if s.internal == "" {
+		writeErr(w, http.StatusNotFound, "Not found")
+		return
+	}
+	if got := r.Header.Get("X-Aigentic-Internal-Secret"); got == "" || !hmac.Equal([]byte(got), []byte(s.internal)) {
+		writeErr(w, http.StatusUnauthorized, "Not authenticated")
+		return
+	}
+	var body struct {
+		Subject string          `json:"subject"`
+		Header  prizm.Header    `json:"header"`
+		Data    json.RawMessage `json:"data"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxRunBody)).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+	u, ok := s.v.Resolve(body.Subject)
+	if !ok {
+		writeErr(w, http.StatusForbidden, "Unknown subject")
+		return
+	}
+	if !u.Can(rights.GroupRun) {
+		writeErr(w, http.StatusForbidden, "Subject lacks the aigentic run right")
+		return
+	}
+	req := prizm.Request{Header: body.Header, Data: body.Data}
+	req.Header.Subject = body.Subject // server-authoritative, never trusts the wire
+	s.dispatch(w, r, u, req)
+}
+
+// dispatch enforces the paid-engine gate then routes the request and maps the outcome to HTTP. It is
+// the shared tail of the cookie-authed run() and the secret-authed internalRun() — one error
+// contract for both surfaces.
+func (s *Server) dispatch(w http.ResponseWriter, r *http.Request, u *auth.User, req prizm.Request) {
 	// The paid Claude API (and the choose router, which may select it) needs the cost right.
 	if paidKind(req.Header.Kind) && !u.Can(rights.GroupAPI) {
 		writeErr(w, http.StatusForbidden, "The paid Claude API requires the aigentic 'cost:api' right")
 		return
 	}
-
 	resp, err := s.reg.Route(r.Context(), req)
 	switch {
 	case errors.Is(err, prizm.ErrNoSuchKind):
