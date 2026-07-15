@@ -26,6 +26,34 @@ type ChooseConfig struct {
 	// spare subscription headroom for the operator's own dev work. nil => never spill.
 	Utilization func() (frac float64, ok bool)
 	SpillAt     float64 // spill threshold; 0 => defaultSpillAt (0.80)
+
+	// LocalModels tiers the LOCAL (ollama) model by complexity: when the router picks the
+	// ollama leaf and the caller pinned no model, it runs the model configured for that
+	// bucket (e.g. a bigger local model for "high"). Empty entries fall back to the ollama
+	// leaf's own default. Only the ollama attempt is affected — Claude fallbacks are left
+	// with the original request. This is how one host serves a small/large local tier.
+	LocalModels LocalModelTier
+}
+
+// LocalModelTier maps a complexity bucket to a local (ollama) model tag ("" => leaf default).
+type LocalModelTier struct {
+	Low    string `json:"low,omitempty"`
+	Medium string `json:"medium,omitempty"`
+	High   string `json:"high,omitempty"`
+}
+
+// pick returns the model tag for a complexity bucket ("" for none/forced).
+func (t LocalModelTier) pick(complexity string) string {
+	switch complexity {
+	case "low":
+		return t.Low
+	case "high":
+		return t.High
+	case "medium":
+		return t.Medium
+	default:
+		return ""
+	}
 }
 
 // defaultPolicy is cli-first: the subscription is a flat-rate cost, so saturate it
@@ -209,9 +237,21 @@ func NewChoose(cfg ChooseConfig) prizm.Processor {
 		fwd := in
 		fwd.Choose = nil // leaves ignore it anyway; keep the forwarded wire clean.
 
+		// Local-model tier: pick a model for the ollama leaf by complexity, but only when the
+		// caller pinned none. Applied per-attempt below so a Claude fallback never inherits an
+		// ollama model tag.
+		tierModel := ""
+		if in.Model == "" {
+			tierModel = cfg.LocalModels.pick(complexity)
+		}
+
 		var lastErr error
 		for i, k := range chain {
-			res, err := subprizm.SpawnTyped[Request, Result](ctx, env.Spawn, env.Header, k, fwd)
+			attempt := fwd
+			if k == KindOllama && tierModel != "" {
+				attempt.Model = tierModel
+			}
+			res, err := subprizm.SpawnTyped[Request, Result](ctx, env.Spawn, env.Header, k, attempt)
 			if err != nil {
 				if errors.Is(err, ErrProcessorUnavailable) {
 					lastErr = err

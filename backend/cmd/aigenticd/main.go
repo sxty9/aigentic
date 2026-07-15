@@ -126,6 +126,15 @@ func configFromEnv(sec *secretstore.Store) aigentic.Config {
 			// nil Utilization unless AIGENTIC_CLI_BUDGET_5H is set, so default stays cli-first.
 			Utilization: aigentic.NewCLIUtilization(cliProjectsDir(), cliWindow(), atoi64(os.Getenv("AIGENTIC_CLI_BUDGET_5H"))),
 			SpillAt:     atof(os.Getenv("AIGENTIC_CLI_SPILL_AT")),
+			// Complexity→leaf mapping. All-empty => built-in cli-first default (backward
+			// compatible). Set AIGENTIC_POLICY_{LOW,MEDIUM,HIGH}=ollama for a local-first tier.
+			Policy: policyFromEnv(),
+			// Local-model tier: run a bigger local model for harder buckets when the ollama
+			// leaf is picked. Medium/default comes from the ollama leaf (AIGENTIC_OLLAMA_MODEL).
+			LocalModels: aigentic.LocalModelTier{
+				Low:  os.Getenv("AIGENTIC_OLLAMA_LOW_MODEL"),
+				High: os.Getenv("AIGENTIC_OLLAMA_HIGH_MODEL"),
+			},
 		},
 	}
 }
@@ -135,6 +144,17 @@ func ollamaConfig() aigentic.OllamaConfig {
 	return aigentic.OllamaConfig{
 		BaseURL: os.Getenv("OLLAMA_HOST"),
 		Model:   os.Getenv("AIGENTIC_OLLAMA_MODEL"),
+	}
+}
+
+// policyFromEnv builds the complexity→leaf routing policy from the environment. Each var is a
+// kind ("ollama"|"claude-cli"|"claude-api"); all-empty yields the zero RoutePolicy, which the
+// router replaces with its built-in cli-first default (so behaviour is unchanged by default).
+func policyFromEnv() aigentic.RoutePolicy {
+	return aigentic.RoutePolicy{
+		Low:    prizm.Kind(os.Getenv("AIGENTIC_POLICY_LOW")),
+		Medium: prizm.Kind(os.Getenv("AIGENTIC_POLICY_MEDIUM")),
+		High:   prizm.Kind(os.Getenv("AIGENTIC_POLICY_HIGH")),
 	}
 }
 
