@@ -35,3 +35,32 @@ export function aiReadable(entry: FileEntry): boolean {
   if (entry.viewer === 'image' && /^image\/(png|jpeg|gif|webp)$/.test(mime)) return true;
   return false;
 }
+
+// Web image types a Claude model reads as vision (same set as aiReadable). On a local (ollama) run
+// these have nothing the model can read, so the backend lists them by name only.
+const IMAGE_RE = /^image\/(png|jpeg|gif|webp)$/;
+// Extensions treated as text when the browser reports no (or a generic) MIME type — common for
+// source and config files dragged straight from a desktop.
+const TEXT_EXT_RE = /\.(txt|md|markdown|json|ya?ml|toml|ini|conf|cfg|csv|tsv|log|xml|html?|css|jsx?|tsx?|go|rs|py|rb|java|kt|c|h|cpp|cc|hpp|sh|bash|zsh|sql|env|tex)$/i;
+
+// fileToInline turns a browser File (drag-drop or the attach button) into an inline part, reusing the
+// SAME text-vs-media rules as the Files "Ask AI" flow: text rides in `content`; png/jpeg/gif/webp
+// images and PDFs ride as base64 with a mediaType; anything else becomes a name-only attachment
+// (counted, not read). Best-effort — an unreadable file yields null.
+export async function fileToInline(file: File): Promise<InlinePart | null> {
+  const mime = file.type || '';
+  try {
+    if (IMAGE_RE.test(mime)) {
+      return { path: file.name, content: bytesToBase64(new Uint8Array(await file.arrayBuffer())), mediaType: mime };
+    }
+    if (mime === 'application/pdf' || /\.pdf$/i.test(file.name)) {
+      return { path: file.name, content: bytesToBase64(new Uint8Array(await file.arrayBuffer())), mediaType: 'application/pdf' };
+    }
+    if (mime.startsWith('text/') || (mime === '' && TEXT_EXT_RE.test(file.name))) {
+      return { path: file.name, content: await file.text(), mediaType: '' };
+    }
+    return { path: file.name, content: '', mediaType: mime || 'application/octet-stream' };
+  } catch {
+    return null;
+  }
+}

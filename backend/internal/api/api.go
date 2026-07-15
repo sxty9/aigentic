@@ -36,21 +36,22 @@ const (
 type Server struct {
 	v            *auth.Verifier
 	reg          *prizm.Registry
-	grave        graveyard.Graveyard                     // the substrate, exposed directly for owned-store use (Mercury's axioms)
-	sec          *secretstore.Store                      // admin-managed Anthropic key; nil disables the secret endpoints
-	ollamaModels func(context.Context) ([]string, error) // lists local ollama models for the picker; nil => none
-	chats        *chatstore.Store                        // per-user chat history; nil disables the /chats endpoints
-	internal     string                                  // shared secret for the internal M2M /run; "" disables that route
+	grave        graveyard.Graveyard                                   // the substrate, exposed directly for owned-store use (Mercury's axioms)
+	sec          *secretstore.Store                                    // admin-managed Anthropic key; nil disables the secret endpoints
+	ollamaModels func(context.Context) ([]string, error)               // lists local ollama models for the picker; nil => none
+	ollamaStatus func(context.Context) ([]aigentic.LoadedModel, error) // resident-model readout (/api/ps); nil => empty
+	chats        *chatstore.Store                                      // per-user chat history; nil disables the /chats endpoints
+	internal     string                                                // shared secret for the internal M2M /run; "" disables that route
 }
 
-// New builds a server. sec may be nil (the /secret endpoints then report 503); ollamaModels may
-// be nil (the /models endpoint then returns no local models); chats may be nil (the /chats
-// endpoints then report empty / 503). internalSecret is the shared secret a peer service (hosuto)
-// presents on internal/run to run a turn on a user's behalf — "" disables that route. grave is the
-// same substrate registered with the processors; the /grave endpoints report 503 for the
+// New builds a server. sec may be nil (the /secret endpoints then report 503); ollamaModels /
+// ollamaStatus may be nil (the /models and /ollama/status endpoints then return empty); chats may be
+// nil (the /chats endpoints then report empty / 503). internalSecret is the shared secret a peer
+// service (hosuto) presents on internal/run to run a turn on a user's behalf — "" disables that route.
+// grave is the same substrate registered with the processors; the /grave endpoints report 503 for the
 // capabilities the active backend does not implement.
-func New(v *auth.Verifier, reg *prizm.Registry, grave graveyard.Graveyard, sec *secretstore.Store, ollamaModels func(context.Context) ([]string, error), chats *chatstore.Store, internalSecret string) *Server {
-	return &Server{v: v, reg: reg, grave: grave, sec: sec, ollamaModels: ollamaModels, chats: chats, internal: internalSecret}
+func New(v *auth.Verifier, reg *prizm.Registry, grave graveyard.Graveyard, sec *secretstore.Store, ollamaModels func(context.Context) ([]string, error), ollamaStatus func(context.Context) ([]aigentic.LoadedModel, error), chats *chatstore.Store, internalSecret string) *Server {
+	return &Server{v: v, reg: reg, grave: grave, sec: sec, ollamaModels: ollamaModels, ollamaStatus: ollamaStatus, chats: chats, internal: internalSecret}
 }
 
 type handler func(w http.ResponseWriter, r *http.Request, u *auth.User)
@@ -81,6 +82,10 @@ func (s *Server) Handler() http.Handler {
 	// Available models per engine (for the Files "Ask AI" picker): static Claude list + the
 	// locally-pulled ollama models. Names aren't sensitive; gate on the run right.
 	mux.HandleFunc("GET "+base+"models", s.guard(rights.GroupRun, false, s.modelsList))
+	// Live local-model residency (from ollama's /api/ps): which models are hot, VRAM used, keep-alive
+	// time left, loaded context window. Drives the chat's staged progress + residency readout so the
+	// user sees why the SSD spins up (a cold load) and how long a model stays warm. Read-only, run-gated.
+	mux.HandleFunc("GET "+base+"ollama/status", s.guard(rights.GroupRun, false, s.ollamaStatusList))
 	// Per-user chat history, keyed server-side by the holistic account (so chats follow the
 	// user across devices). GET reads the blob; PUT replaces it (CSRF on the write).
 	mux.HandleFunc("GET "+base+"chats", s.guard(rights.GroupRun, false, s.chatsGet))
@@ -384,6 +389,21 @@ func (s *Server) modelsList(w http.ResponseWriter, r *http.Request, _ *auth.User
 		defer cancel()
 		if m, err := s.ollamaModels(ctx); err == nil && len(m) > 0 {
 			out["ollama"] = m
+		}
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// ollamaStatusList reports the models ollama currently has resident (from /api/ps), enriched with
+// keep-alive time-left and the loaded context window. Best-effort: ollama unreachable / not
+// configured => an empty list (the UI then shows no residency, never an error). Read-only.
+func (s *Server) ollamaStatusList(w http.ResponseWriter, r *http.Request, _ *auth.User) {
+	out := map[string]any{"models": []aigentic.LoadedModel{}}
+	if s.ollamaStatus != nil {
+		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+		defer cancel()
+		if m, err := s.ollamaStatus(ctx); err == nil && len(m) > 0 {
+			out["models"] = m
 		}
 	}
 	writeJSON(w, http.StatusOK, out)

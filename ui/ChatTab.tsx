@@ -30,6 +30,7 @@ export function ChatTab({ api, apiFor, ui }: Pick<ServiceContextProps, 'api' | '
           key={store.activeId}
           chatId={store.activeId}
           api={api}
+          apiFor={apiFor}
           ui={ui}
           picker={picker}
           messages={store.active?.messages ?? []}
