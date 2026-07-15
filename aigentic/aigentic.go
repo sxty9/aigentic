@@ -84,6 +84,18 @@ type Request struct {
 	Claude       *ClaudeOptions `json:"claude,omitempty"`       // Claude-leaf knobs (effort, …); nil/ignored for ollama
 	Choose       *ChooseOptions `json:"choose,omitempty"`       // router-only knobs; nil/ignored for the three leaves
 	Inline       []InlineFile   `json:"inline,omitempty"`       // caller-supplied file contents used as context WITHOUT server fs access (e.g. the Files app reads the user's private share and passes the bytes here); same byte budget + binary filter as Paths
+	System       string         `json:"system,omitempty"`       // extra guidance appended to the engine's SYSTEM prompt, so a caller can bind a chat to a domain (e.g. one hosuto server) without putting the context in the user turn. claude-cli only today (--append-system-prompt).
+	MCP          []MCPRef       `json:"mcp,omitempty"`          // MCP servers to attach for THIS run, turning the engine agentic against them. claude-cli only (its `claude` binary is a native MCP client).
+}
+
+// MCPRef attaches one Model-Context-Protocol server to an agentic run. Name selects a provider the
+// daemon has been configured to allow — the URL lives server-side, so a crafted request can never
+// point the engine at an arbitrary host (no SSRF from the wire). Token is the caller's own bearer
+// credential for that provider, minted by the provider and scoped to what the caller may do there.
+// Honoured only by the claude-cli leaf.
+type MCPRef struct {
+	Name  string `json:"name"`
+	Token string `json:"token,omitempty"`
 }
 
 // InlineFile is a file's content supplied directly in the request (not read from disk by the

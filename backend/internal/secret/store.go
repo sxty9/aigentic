@@ -93,6 +93,18 @@ func (s *Store) Key(subject string) (string, bool) {
 	return s.gkey, s.gkey != ""
 }
 
+// UserKey returns ONLY the user's own Anthropic API key — never the global/env fallback that Key()
+// falls through to. The claude-cli leaf uses it to bill an agentic run to the user's own Console when
+// they have no subscription token; the shared admin key must never silently back a user's agentic CLI
+// session, so this deliberately does not reach the global tier.
+func (s *Store) UserKey(subject string) (string, bool) {
+	if s == nil {
+		return "", false
+	}
+	k, ok := s.readUserFile(subject, apiKeyFile)
+	return k, ok && k != ""
+}
+
 // UserKeyStatus reports the EFFECTIVE api-key status for a user (own → global → env), so the
 // per-user panel can show "your key", "using the shared key", or "not configured".
 func (s *Store) UserKeyStatus(subject string) Status {

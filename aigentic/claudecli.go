@@ -47,13 +47,24 @@ type ClaudeCLIConfig struct {
 	Run   ExecRunner // default defaultExecRunner; set in tests to fake the CLI
 
 	// TokenFunc returns the requesting user's linked Claude subscription token (from
-	// `claude setup-token`). When set and it returns no token, the leaf reports
-	// ErrProcessorUnavailable (the user hasn't linked their Claude) so choose falls back.
-	// The token is injected as CLAUDE_CODE_OAUTH_TOKEN. nil => no per-user gating (tests).
+	// `claude setup-token`), injected as CLAUDE_CODE_OAUTH_TOKEN (bills their Pro/Max). Preferred
+	// over KeyFunc when both are present. nil => subscription billing not offered.
 	TokenFunc func(subject string) (string, bool)
+	// KeyFunc returns the requesting user's OWN Anthropic API key (never a shared/global fallback),
+	// injected as ANTHROPIC_API_KEY when they have no subscription token — so a user who configured an
+	// API key in aigentic gets the agentic engine too, billed to their own Console. nil => API-key
+	// billing not offered for this leaf.
+	//
+	// With TokenFunc and/or KeyFunc set, a user with NEITHER credential makes this leaf
+	// ErrProcessorUnavailable, so choose falls back and the Ask-AI tab tells them to connect one.
+	KeyFunc func(subject string) (string, bool)
 	// ConfigDirFunc returns (creating) the user's CLAUDE_CONFIG_DIR so each user's CLI session
 	// is isolated. nil => the CLI uses its default (the daemon's HOME).
 	ConfigDirFunc func(subject string) (string, error)
+	// MCPProviders maps a provider name to its base URL. It is the allow-list of MCP servers a request
+	// may attach by name (see MCPRef); the URL is never taken from the wire, so a crafted request
+	// cannot aim the CLI at an arbitrary host. Empty => no MCP servers can be attached.
+	MCPProviders map[string]string
 }
 
 // NewClaudeCLI returns the subscription-CLI leaf processor (Kind "claude-cli"). The CLI
@@ -79,21 +90,32 @@ func NewClaudeCLI(cfg ClaudeCLIConfig, lim Limits) prizm.Processor {
 				return Result{}, fmt.Errorf("%w: claude CLI not found: %v", ErrProcessorUnavailable, err)
 			}
 		}
-		// Per-user credentials: the requesting user's subscription token + config dir. With
-		// TokenFunc set, a user who hasn't linked their Claude makes this leaf unavailable, so
-		// choose falls back to another engine (e.g. ollama) rather than failing the request.
+		// Per-user credentials: whatever the requesting user configured in aigentic — a subscription
+		// token (billed to their Pro/Max) or their own API key (billed to their Console). Either drives
+		// the same agentic run, so the Ask-AI chat works for both, not only subscribers. With gating
+		// configured but NEITHER credential present, the leaf is unavailable (choose falls back, and the
+		// tab prompts them to connect one).
 		subject := env.Header.Subject
 		var extraEnv []string
-		if cfg.TokenFunc != nil {
-			// Per-user subscription: an unlinked user makes this leaf unavailable (choose falls
-			// back), and the token bills their own Claude.
-			tok, ok := cfg.TokenFunc(subject)
-			if !ok || tok == "" {
-				return Result{}, fmt.Errorf("%w: no Claude subscription linked for %q", ErrProcessorUnavailable, subject)
+		if cfg.TokenFunc != nil || cfg.KeyFunc != nil {
+			// Resolve the credential BEFORE isolating a config dir, so a user with none is turned away
+			// without leaving a stray directory behind.
+			var credEnv string
+			if cfg.TokenFunc != nil {
+				if tok, ok := cfg.TokenFunc(subject); ok && tok != "" {
+					credEnv = "CLAUDE_CODE_OAUTH_TOKEN=" + tok
+				}
 			}
-			// Isolate the user's CLI session in their own CLAUDE_CONFIG_DIR. Fail CLOSED if it
-			// can't be set up — NEVER run a user's token in the shared service-account dir, or
-			// concurrent users would share one session/credential cache.
+			if credEnv == "" && cfg.KeyFunc != nil {
+				if key, ok := cfg.KeyFunc(subject); ok && key != "" {
+					credEnv = "ANTHROPIC_API_KEY=" + key
+				}
+			}
+			if credEnv == "" {
+				return Result{}, fmt.Errorf("%w: no Claude credential for %q — link a subscription or an API key", ErrProcessorUnavailable, subject)
+			}
+			// Isolate the user's CLI session. Fail CLOSED — NEVER run a user's credential in the shared
+			// service-account dir, or concurrent users would share one session/credential cache.
 			if cfg.ConfigDirFunc != nil {
 				dir, derr := cfg.ConfigDirFunc(subject)
 				if derr != nil || dir == "" {
@@ -101,9 +123,9 @@ func NewClaudeCLI(cfg ClaudeCLIConfig, lim Limits) prizm.Processor {
 				}
 				extraEnv = append(extraEnv, "CLAUDE_CONFIG_DIR="+dir)
 			}
-			extraEnv = append(extraEnv, "CLAUDE_CODE_OAUTH_TOKEN="+tok)
+			extraEnv = append(extraEnv, credEnv)
 		} else if cfg.ConfigDirFunc != nil {
-			// No per-user token gating (tests / ambient login): best-effort config dir.
+			// No per-user gating (tests / ambient login): best-effort config dir.
 			if dir, derr := cfg.ConfigDirFunc(subject); derr == nil && dir != "" {
 				extraEnv = append(extraEnv, "CLAUDE_CONFIG_DIR="+dir)
 			}
@@ -136,10 +158,35 @@ func NewClaudeCLI(cfg ClaudeCLIConfig, lim Limits) prizm.Processor {
 		if merr != nil {
 			return Result{}, fmt.Errorf("%w: claude-cli workdir: %v", ErrProcessorUnavailable, merr)
 		}
+		var allowed []string
 		if workdir != "" {
 			defer os.RemoveAll(workdir)
 			// Read-only tools only: the CLI may open/inspect the files, nothing else (no Bash/Write).
-			args = append(args, "--allowedTools", "Read", "Glob", "Grep")
+			allowed = append(allowed, "Read", "Glob", "Grep")
+		}
+		// Attach MCP servers → the CLI becomes agentic against them. This is how the Ask-AI tab binds a
+		// chat to hosuto's tools: each ref names a daemon-configured provider (URL is server-side, so no
+		// SSRF from the wire) and carries the user's own scoped token. --strict-mcp-config ignores any
+		// ambient config; the mcp__<name>__* allow-list pre-approves exactly those tools in headless -p.
+		if len(in.MCP) > 0 {
+			mcpFile, names, mcperr := writeMCPConfig(cfg.MCPProviders, in.MCP)
+			if mcperr != nil {
+				return Result{}, fmt.Errorf("%w: mcp config: %v", prizm.ErrInvalidRequest, mcperr)
+			}
+			defer os.Remove(mcpFile)
+			args = append(args, "--mcp-config", mcpFile, "--strict-mcp-config")
+			for _, n := range names {
+				allowed = append(allowed, "mcp__"+n+"__*")
+			}
+		}
+		if len(allowed) > 0 {
+			args = append(args, "--allowedTools")
+			args = append(args, allowed...)
+		}
+		// Server-bound guidance goes to the SYSTEM prompt (not the user turn), so it shapes every step
+		// of the agentic loop without being echoed back as if the user had said it.
+		if sys := strings.TrimSpace(in.System); sys != "" {
+			args = append(args, "--append-system-prompt", sys)
 		}
 		prompt := composeCLIPrompt(substrateGuidance(lim, env.Grave), listing, in)
 		// Prompt goes on stdin to avoid ARG_MAX with large context.
@@ -237,6 +284,45 @@ func safeName(p string, seen map[string]int) string {
 	}
 	seen[name] = 1
 	return name
+}
+
+// writeMCPConfig writes a temporary .mcp.json for the requested servers and returns its path and the
+// server names to allow-list. Only refs whose Name is a configured provider are included: the daemon
+// holds the URL, so the wire can never point the CLI at an arbitrary host (no SSRF from a crafted
+// request). An unknown provider is an error, not a silent drop, so a misconfiguration is visible
+// rather than a chat that quietly has no tools. The file is 0600 and the caller removes it.
+func writeMCPConfig(providers map[string]string, refs []MCPRef) (path string, names []string, err error) {
+	servers := map[string]any{}
+	for _, ref := range refs {
+		url := providers[ref.Name]
+		if url == "" {
+			return "", nil, fmt.Errorf("unknown MCP provider %q", ref.Name)
+		}
+		entry := map[string]any{"type": "http", "url": url}
+		if ref.Token != "" {
+			entry["headers"] = map[string]any{"Authorization": "Bearer " + ref.Token}
+		}
+		servers[ref.Name] = entry
+		names = append(names, ref.Name)
+	}
+	b, err := json.Marshal(map[string]any{"mcpServers": servers})
+	if err != nil {
+		return "", nil, err
+	}
+	f, err := os.CreateTemp("", "aigentic-mcp-*.json")
+	if err != nil {
+		return "", nil, err
+	}
+	if _, err := f.Write(b); err != nil {
+		f.Close()
+		os.Remove(f.Name())
+		return "", nil, err
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(f.Name())
+		return "", nil, err
+	}
+	return f.Name(), names, nil
 }
 
 // composeCLIPrompt points the CLI at the materialized files (if any), then the

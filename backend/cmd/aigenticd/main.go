@@ -104,11 +104,16 @@ func configFromEnv(sec *secretstore.Store) aigentic.Config {
 		ClaudeCLI: aigentic.ClaudeCLIConfig{
 			Bin:   os.Getenv("AIGENTIC_CLAUDE_BIN"),
 			Model: os.Getenv("AIGENTIC_CLAUDE_CLI_MODEL"),
-			// Per-user subscription: each request runs `claude` with the requesting user's own
-			// setup-token (CLAUDE_CODE_OAUTH_TOKEN) and an isolated CLAUDE_CONFIG_DIR. A user
-			// who hasn't linked their Claude makes claude-cli unavailable (choose falls back).
+			// Per-user billing: each request runs `claude` with the requesting user's own credential —
+			// their subscription token (CLAUDE_CODE_OAUTH_TOKEN) if linked, else their own API key
+			// (ANTHROPIC_API_KEY, never the shared fallback) — in an isolated CLAUDE_CONFIG_DIR. A user
+			// with neither makes claude-cli unavailable (choose falls back).
 			TokenFunc:     sec.OAuthToken,
+			KeyFunc:       sec.UserKey,
 			ConfigDirFunc: sec.ConfigDir,
+			// The allow-list of MCP servers an agentic run may attach (name → URL). The Ask-AI tab
+			// attaches "hosuto" here; the URL is server-side so the wire cannot aim the CLI elsewhere.
+			MCPProviders: mcpProvidersFromEnv(),
 		},
 		ClaudeAPI: aigentic.ClaudeAPIConfig{
 			BaseURL: os.Getenv("ANTHROPIC_BASE_URL"),
@@ -137,6 +142,35 @@ func configFromEnv(sec *secretstore.Store) aigentic.Config {
 			},
 		},
 	}
+}
+
+// mcpProvidersFromEnv parses AIGENTIC_MCP_PROVIDERS — a comma- or whitespace-separated list of
+// name=url pairs, e.g. "hosuto=http://127.0.0.1:8779/api/services/hosuto/mcp". It is the allow-list
+// of MCP servers an agentic run may attach by name; unset => no providers, so the feature stays inert
+// until a deployment opts in. The plain form (no JSON) keeps it clean in a systemd Environment= line.
+func mcpProvidersFromEnv() map[string]string {
+	raw := strings.TrimSpace(os.Getenv("AIGENTIC_MCP_PROVIDERS"))
+	if raw == "" {
+		return nil
+	}
+	out := map[string]string{}
+	for _, field := range strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ',' || r == ' ' || r == '\t' || r == '\n'
+	}) {
+		i := strings.IndexByte(field, '=') // split on the first = so a URL query (also =) survives
+		if i <= 0 {
+			continue
+		}
+		name := strings.TrimSpace(field[:i])
+		url := strings.TrimSpace(field[i+1:])
+		if name != "" && url != "" {
+			out[name] = url
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // ollamaConfig builds the shared local-ollama config (engine + classifier + model listing).
