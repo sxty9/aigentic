@@ -20,20 +20,16 @@ type OllamaConfig struct {
 	BaseURL string       // default "http://localhost:11434"
 	Model   string       // default model when Request.Model is empty
 	Client  *http.Client // default http.DefaultClient
-	// CtxCap returns the maximum context window (num_ctx / KV cache) to request from ollama.
-	// The leaf still sizes num_ctx to the actual prompt; this only caps it. nil => defaultMaxCtx.
-	// Wire it to a live setting (e.g. a context-mode toggle) to bound the KV cache so a model's
-	// VRAM footprint stays lean — a smaller KV loads faster and is likelier to fit one GPU
-	// (cross-GPU KV traffic is slow without NVLink).
+	// CtxCap returns the context window (num_ctx / KV cache) to request from ollama — a FIXED
+	// size, wired to a live setting (e.g. a context-mode toggle). nil => defaultMaxCtx. It is
+	// deliberately fixed, NOT sized per prompt: ollama reloads the model whenever num_ctx
+	// changes, so a varying value thrashes the model in and out of VRAM across a multi-request
+	// workload (e.g. a crawl's many decisions) — a fixed size keeps exactly one warm runner.
 	CtxCap func() int
 }
 
-const (
-	// minNumCtx is the smallest context window we request (a floor for tiny prompts).
-	minNumCtx = 2048
-	// defaultMaxCtx caps num_ctx when no CtxCap is configured (fits a 14b comfortably on one GPU).
-	defaultMaxCtx = 12288
-)
+// defaultMaxCtx is the context window used when no CtxCap is configured (fits a 14b in ~10 GB).
+const defaultMaxCtx = 12288
 
 // ollamaClient is the minimal /api/chat client, shared by the ollama leaf and the
 // choose router's classifier (so the cheap classification call reuses one code path).
@@ -64,30 +60,19 @@ func newOllamaClient(cfg OllamaConfig) *ollamaClient {
 	return &ollamaClient{base: base, model: cfg.Model, client: client, ctxCap: cfg.CtxCap}
 }
 
-// numCtx sizes the context window (KV cache) to what THIS request needs — estimated input tokens
-// + the answer budget + headroom — rounded up to a 2k block and clamped to [minNumCtx, ceiling].
-// Sizing it to the request instead of the model's 32k default keeps the KV cache (and VRAM) lean —
-// the model loads faster, stays hot, and is likelier to fit one GPU (cross-GPU KV is slow without
-// NVLink). The ceiling comes from CtxCap (a live context-mode setting) or defaultMaxCtx.
-func (c *ollamaClient) numCtx(system, user string, numPredict int) int {
-	ceiling := defaultMaxCtx
+// numCtx returns the context window (num_ctx / KV cache) for a request: a FIXED size from the
+// configured cap (a live context-mode setting) or defaultMaxCtx. It is deliberately NOT sized
+// per prompt — ollama reloads the model whenever num_ctx changes, so a varying value would thrash
+// the model in and out of VRAM across a multi-request workload (a crawl reloaded on every page and
+// never finished). A fixed size keeps exactly one warm runner; the smaller value (vs the model's
+// 32k default) just keeps the footprint lean. contextMode picks the fixed size, not per-prompt.
+func (c *ollamaClient) numCtx() int {
 	if c.ctxCap != nil {
 		if v := c.ctxCap(); v > 0 {
-			ceiling = v
+			return v
 		}
 	}
-	// ~3 chars/token is a conservative estimate (German + URLs/JSON tokenize denser than English
-	// prose), biasing toward a slightly larger window so the prompt is not silently truncated.
-	inTok := (len(system) + len(user)) / 3
-	want := inTok + numPredict + 512
-	want = ((want + 2047) / 2048) * 2048 // round up to a whole 2k block
-	if want < minNumCtx {
-		want = minNumCtx
-	}
-	if want > ceiling {
-		want = ceiling
-	}
-	return want
+	return defaultMaxCtx
 }
 
 // chat issues a non-streaming /api/chat call and returns the assistant content + usage.
@@ -113,7 +98,7 @@ func (c *ollamaClient) chatFormat(ctx context.Context, model, system, user strin
 	}
 	msgs = append(msgs, map[string]string{"role": "user", "content": user})
 
-	options := map[string]any{"num_predict": numPredict, "num_ctx": c.numCtx(system, user, numPredict)}
+	options := map[string]any{"num_predict": numPredict, "num_ctx": c.numCtx()}
 	payload := map[string]any{
 		"model":    model,
 		"messages": msgs,
