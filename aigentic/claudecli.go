@@ -205,6 +205,9 @@ func NewClaudeCLI(cfg ClaudeCLIConfig, lim Limits) prizm.Processor {
 				InputTokens  int `json:"input_tokens"`
 				OutputTokens int `json:"output_tokens"`
 			} `json:"usage"`
+			// modelUsage is keyed by the concrete model id(s) the CLI actually used — the only place the
+			// real model surfaces, since a subscription run picks the model itself.
+			ModelUsage map[string]cliModelUse `json:"modelUsage"`
 		}
 		if err := json.Unmarshal(stdout, &out); err != nil {
 			return Result{}, fmt.Errorf("claude-cli: bad json output: %v", err)
@@ -217,7 +220,13 @@ func NewClaudeCLI(cfg ClaudeCLIConfig, lim Limits) prizm.Processor {
 			OutputTokens: out.Usage.OutputTokens,
 			TotalTokens:  out.Usage.InputTokens + out.Usage.OutputTokens,
 		}
-		return Result{Output: out.Result, Engine: KindClaudeCLI, Model: model, Effort: effort, Usage: u, Context: items}, nil
+		// Report the model that actually ran: an explicit override if the caller pinned one, otherwise
+		// whatever the CLI chose (so the UI can be honest about which model answered).
+		reported := model
+		if reported == "" {
+			reported = primaryModel(out.ModelUsage)
+		}
+		return Result{Output: out.Result, Engine: KindClaudeCLI, Model: reported, Effort: effort, Usage: u, Context: items}, nil
 	})
 }
 
@@ -284,6 +293,27 @@ func safeName(p string, seen map[string]int) string {
 	}
 	seen[name] = 1
 	return name
+}
+
+// cliModelUse is the per-model slice of the CLI's modelUsage map (only the field we rank on).
+type cliModelUse struct {
+	OutputTokens int `json:"outputTokens"`
+}
+
+// primaryModel returns the model id that produced the most output — the one that actually answered
+// (a run may briefly touch a smaller model for a sub-step). The "[1m]" style context-window suffix is
+// stripped, so the UI shows the plain model id (e.g. claude-opus-4-8).
+func primaryModel(mu map[string]cliModelUse) string {
+	best, bestTok := "", -1
+	for m, u := range mu {
+		if u.OutputTokens > bestTok {
+			best, bestTok = m, u.OutputTokens
+		}
+	}
+	if i := strings.IndexByte(best, '['); i > 0 {
+		best = best[:i]
+	}
+	return best
 }
 
 // writeMCPConfig writes a temporary .mcp.json for the requested servers and returns its path and the
