@@ -55,13 +55,14 @@ func main() {
 	// global anthropic.key is an optional shared admin fallback; ANTHROPIC_API_KEY seeds it.
 	sec := secretstore.New(secretPath(), usersDir(), os.Getenv("ANTHROPIC_API_KEY"))
 
-	// gpuMode comes from the central Configuration tab (config/aigentic.json → the dashboard →
-	// /var/lib/holistic/config/aigentic.json), read LIVE (5s TTL, no restart). It caps the context
-	// window so local models stay on one GPU (single-gpu) or may span both for a larger window
-	// (multi-gpu). The leaf still sizes num_ctx to the actual prompt; this only bounds it.
+	// contextMode comes from the central Configuration tab (config/aigentic.json → the dashboard →
+	// /var/lib/holistic/config/aigentic.json), read LIVE (5s TTL, no restart). It caps the local
+	// context window: "compact" keeps the VRAM footprint lean (best latency); "large" allows long
+	// documents (more VRAM, may span both GPUs). The leaf still sizes num_ctx to the actual prompt;
+	// this only bounds it.
 	hc := hconfig.New("aigentic", "", "")
 	ctxCap := func() int {
-		if hc.String("gpuMode", "single-gpu") == "multi-gpu" {
+		if hc.String("contextMode", "compact") == "large" {
 			return 32768
 		}
 		return 12288

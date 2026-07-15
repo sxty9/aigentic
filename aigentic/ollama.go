@@ -22,8 +22,9 @@ type OllamaConfig struct {
 	Client  *http.Client // default http.DefaultClient
 	// CtxCap returns the maximum context window (num_ctx / KV cache) to request from ollama.
 	// The leaf still sizes num_ctx to the actual prompt; this only caps it. nil => defaultMaxCtx.
-	// Wire it to a live setting (e.g. a GPU-mode toggle) to bound KV so a model that fits one GPU
-	// stays on one GPU (no cross-GPU KV traffic, which is slow without NVLink).
+	// Wire it to a live setting (e.g. a context-mode toggle) to bound the KV cache so a model's
+	// VRAM footprint stays lean — a smaller KV loads faster and is likelier to fit one GPU
+	// (cross-GPU KV traffic is slow without NVLink).
 	CtxCap func() int
 }
 
@@ -64,10 +65,10 @@ func newOllamaClient(cfg OllamaConfig) *ollamaClient {
 }
 
 // numCtx sizes the context window (KV cache) to what THIS request needs — estimated input tokens
-// + the answer budget + headroom — rounded up to a 2k block and clamped to [minNumCtx, cap]. Sizing
-// it to the request instead of using the model's 32k default keeps a model that fits one GPU ON one
-// GPU (no cross-GPU KV), which matters a lot on machines without NVLink. cap comes from CtxCap (a
-// live GPU-mode setting) or defaultMaxCtx.
+// + the answer budget + headroom — rounded up to a 2k block and clamped to [minNumCtx, ceiling].
+// Sizing it to the request instead of the model's 32k default keeps the KV cache (and VRAM) lean —
+// the model loads faster, stays hot, and is likelier to fit one GPU (cross-GPU KV is slow without
+// NVLink). The ceiling comes from CtxCap (a live context-mode setting) or defaultMaxCtx.
 func (c *ollamaClient) numCtx(system, user string, numPredict int) int {
 	ceiling := defaultMaxCtx
 	if c.ctxCap != nil {

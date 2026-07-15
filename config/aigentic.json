@@ -5,14 +5,14 @@
     {
       "id": "compute",
       "label": "Compute",
-      "description": "Local model context budget. single-gpu keeps the context window compact so models stay lean and hot (best latency); multi-gpu allows a large context window that may span both GPUs (for long documents).",
+      "description": "Maximum context window for local (ollama) models. aigentic already sizes each request's context to what it needs; this only caps it. compact (~12k tokens) keeps the VRAM footprint lean so models stay hot with the best latency; large (~32k tokens) allows long documents at the cost of more VRAM (which may span both GPUs, slower without NVLink).",
       "settings": [
         {
-          "id": "gpuMode",
-          "label": "GPU mode",
+          "id": "contextMode",
+          "label": "Context window",
           "type": "enum",
-          "options": ["single-gpu", "multi-gpu"],
-          "default": "single-gpu"
+          "options": ["compact", "large"],
+          "default": "compact"
         }
       ]
     }
