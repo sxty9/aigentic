@@ -5,7 +5,7 @@
     {
       "id": "compute",
       "label": "Compute",
-      "description": "How aigentic spreads local models across the machine's GPUs.",
+      "description": "Local model context budget. single-gpu keeps the context window compact so models stay lean and hot (best latency); multi-gpu allows a large context window that may span both GPUs (for long documents).",
       "settings": [
         {
           "id": "gpuMode",
