@@ -1,0 +1,20 @@
+{
+  "service": "aigentic",
+  "version": 1,
+  "categories": [
+    {
+      "id": "compute",
+      "label": "Compute",
+      "description": "How aigentic spreads local models across the machine's GPUs.",
+      "settings": [
+        {
+          "id": "gpuMode",
+          "label": "GPU mode",
+          "type": "enum",
+          "options": ["single-gpu", "multi-gpu"],
+          "default": "single-gpu"
+        }
+      ]
+    }
+  ]
+}

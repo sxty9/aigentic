@@ -20,7 +20,19 @@ type OllamaConfig struct {
 	BaseURL string       // default "http://localhost:11434"
 	Model   string       // default model when Request.Model is empty
 	Client  *http.Client // default http.DefaultClient
+	// CtxCap returns the maximum context window (num_ctx / KV cache) to request from ollama.
+	// The leaf still sizes num_ctx to the actual prompt; this only caps it. nil => defaultMaxCtx.
+	// Wire it to a live setting (e.g. a GPU-mode toggle) to bound KV so a model that fits one GPU
+	// stays on one GPU (no cross-GPU KV traffic, which is slow without NVLink).
+	CtxCap func() int
 }
+
+const (
+	// minNumCtx is the smallest context window we request (a floor for tiny prompts).
+	minNumCtx = 2048
+	// defaultMaxCtx caps num_ctx when no CtxCap is configured (fits a 14b comfortably on one GPU).
+	defaultMaxCtx = 12288
+)
 
 // ollamaClient is the minimal /api/chat client, shared by the ollama leaf and the
 // choose router's classifier (so the cheap classification call reuses one code path).
@@ -28,6 +40,7 @@ type ollamaClient struct {
 	base   string
 	model  string
 	client *http.Client
+	ctxCap func() int
 
 	mu        sync.Mutex
 	autoModel string // lazily-detected model when none is configured (zero-config)
@@ -47,7 +60,33 @@ func newOllamaClient(cfg OllamaConfig) *ollamaClient {
 	if client == nil {
 		client = &http.Client{Timeout: 120 * time.Second}
 	}
-	return &ollamaClient{base: base, model: cfg.Model, client: client}
+	return &ollamaClient{base: base, model: cfg.Model, client: client, ctxCap: cfg.CtxCap}
+}
+
+// numCtx sizes the context window (KV cache) to what THIS request needs — estimated input tokens
+// + the answer budget + headroom — rounded up to a 2k block and clamped to [minNumCtx, cap]. Sizing
+// it to the request instead of using the model's 32k default keeps a model that fits one GPU ON one
+// GPU (no cross-GPU KV), which matters a lot on machines without NVLink. cap comes from CtxCap (a
+// live GPU-mode setting) or defaultMaxCtx.
+func (c *ollamaClient) numCtx(system, user string, numPredict int) int {
+	ceiling := defaultMaxCtx
+	if c.ctxCap != nil {
+		if v := c.ctxCap(); v > 0 {
+			ceiling = v
+		}
+	}
+	// ~3 chars/token is a conservative estimate (German + URLs/JSON tokenize denser than English
+	// prose), biasing toward a slightly larger window so the prompt is not silently truncated.
+	inTok := (len(system) + len(user)) / 3
+	want := inTok + numPredict + 512
+	want = ((want + 2047) / 2048) * 2048 // round up to a whole 2k block
+	if want < minNumCtx {
+		want = minNumCtx
+	}
+	if want > ceiling {
+		want = ceiling
+	}
+	return want
 }
 
 // chat issues a non-streaming /api/chat call and returns the assistant content + usage.
@@ -73,7 +112,7 @@ func (c *ollamaClient) chatFormat(ctx context.Context, model, system, user strin
 	}
 	msgs = append(msgs, map[string]string{"role": "user", "content": user})
 
-	options := map[string]any{"num_predict": numPredict}
+	options := map[string]any{"num_predict": numPredict, "num_ctx": c.numCtx(system, user, numPredict)}
 	payload := map[string]any{
 		"model":    model,
 		"messages": msgs,

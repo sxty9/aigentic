@@ -40,6 +40,7 @@ detect_service_id() {
 UNIT="/etc/systemd/system/${SERVICE_ID}.service"
 CADDY_ROUTE="/etc/caddy/conf.d/${SERVICE_ID}.caddy"
 PERMS_FILE="/etc/holistic/permissions.d/${SERVICE_ID}.json"
+CONFIG_FILE="/etc/holistic/config.d/${SERVICE_ID}.json"
 DAEMON_BIN="$SERVICE_APP/bin/${SERVICE_ID}d"
 ADMIN_ENV="$(printf '%s' "${SERVICE_ID:-service}" | tr '[:lower:]' '[:upper:]')_ADMIN_GROUP"
 
@@ -193,6 +194,18 @@ install_permissions() {
   done
 }
 
+install_config() {
+  # The mirror of install_permissions, for the configuration standard: config/<id>.json declares
+  # the knobs (+ defaults), the dashboard's central Configuration tab writes the values to
+  # /var/lib/holistic/config/<id>.json, and internal/hconfig reads both live — so an admin's edit
+  # lands without a restart, and a host with no values file runs on the manifest defaults.
+  local src="$REPO_ROOT/config/$SERVICE_ID.json"
+  [ -f "$src" ] || return 0
+  install -d -o "$HOLISTIC_GROUP" -g "$HOLISTIC_GROUP" -m 0755 /etc/holistic/config.d 2>/dev/null \
+    || install -d -m 0755 /etc/holistic/config.d
+  install -m 0644 "$src" "$CONFIG_FILE"
+}
+
 grant_secret_access() {
   if [ ! -f "$HOLISTIC_SECRET_FILE" ]; then
     warn "$HOLISTIC_SECRET_FILE not found — install the holistic dashboard first"
@@ -266,6 +279,9 @@ cmd_setup() {
   log "declaring rights (permissions.d) + backing groups..."
   install_permissions
 
+  log "declaring configuration (config.d)..."
+  install_config
+
   log "linking UI plugin into holistic + rebuilding dashboard SPA..."
   install -d "$holistic/frontend/external"
   ln -sfn "$REPO_ROOT/ui" "$holistic/frontend/external/$SERVICE_ID"
@@ -319,6 +335,7 @@ cmd_status() {
   printf '  %-16s %s\n' "unit:"   "$([ -f "$UNIT" ] && echo "$UNIT" || echo missing)"
   printf '  %-16s %s\n' "route:"  "$([ -f "$CADDY_ROUTE" ] && echo "$CADDY_ROUTE" || echo missing)"
   printf '  %-16s %s\n' "rights:" "$([ -f "$PERMS_FILE" ] && echo "$PERMS_FILE" || echo missing)"
+  printf '  %-16s %s\n' "config:" "$([ -f "$CONFIG_FILE" ] && echo "$CONFIG_FILE" || echo missing)"
   if holistic="$(detect_holistic_repo 2>/dev/null)"; then
     plugin="$holistic/frontend/external/$SERVICE_ID"
     printf '  %-16s %s\n' "plugin:" "$([ -L "$plugin" ] && echo "linked ($holistic)" || echo "missing ($holistic)")"
@@ -341,7 +358,7 @@ cmd_uninstall() {
 
   systemctl disable --now "$SERVICE_ID" >/dev/null 2>&1 || true
   rm -f "$UNIT"; systemctl daemon-reload
-  rm -f "$CADDY_ROUTE" "$PERMS_FILE"
+  rm -f "$CADDY_ROUTE" "$PERMS_FILE" "$CONFIG_FILE"
 
   local holistic
   if holistic="$(detect_holistic_repo 2>/dev/null)"; then

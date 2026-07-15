@@ -27,6 +27,7 @@ import (
 	"github.com/sxty9/aigentic/backend/internal/auth"
 	"github.com/sxty9/aigentic/backend/internal/chatstore"
 	"github.com/sxty9/aigentic/backend/internal/grave"
+	"github.com/sxty9/aigentic/backend/internal/hconfig"
 	secretstore "github.com/sxty9/aigentic/backend/internal/secret"
 	"github.com/sxty9/prizm/prizm"
 )
@@ -54,8 +55,20 @@ func main() {
 	// global anthropic.key is an optional shared admin fallback; ANTHROPIC_API_KEY seeds it.
 	sec := secretstore.New(secretPath(), usersDir(), os.Getenv("ANTHROPIC_API_KEY"))
 
+	// gpuMode comes from the central Configuration tab (config/aigentic.json → the dashboard →
+	// /var/lib/holistic/config/aigentic.json), read LIVE (5s TTL, no restart). It caps the context
+	// window so local models stay on one GPU (single-gpu) or may span both for a larger window
+	// (multi-gpu). The leaf still sizes num_ctx to the actual prompt; this only bounds it.
+	hc := hconfig.New("aigentic", "", "")
+	ctxCap := func() int {
+		if hc.String("gpuMode", "single-gpu") == "multi-gpu" {
+			return 32768
+		}
+		return 12288
+	}
+
 	reg := prizm.NewRegistry(*maxDepth)
-	if err := aigentic.Register(reg, g, configFromEnv(sec)); err != nil {
+	if err := aigentic.Register(reg, g, configFromEnv(sec, ctxCap)); err != nil {
 		log.Fatalf("aigenticd: %v", err)
 	}
 
@@ -64,7 +77,7 @@ func main() {
 
 	srv := &http.Server{
 		Handler: api.New(v, reg, g, sec, func(ctx context.Context) ([]string, error) {
-			return aigentic.OllamaModels(ctx, ollamaConfig())
+			return aigentic.OllamaModels(ctx, ollamaConfig(ctxCap))
 		}, chats).Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
@@ -94,8 +107,8 @@ func main() {
 // configFromEnv assembles the processor configuration from the environment (set by the
 // systemd unit). Engines self-report ErrProcessorUnavailable when their backing service or
 // secret is absent, so a partial environment still yields a runnable service.
-func configFromEnv(sec *secretstore.Store) aigentic.Config {
-	ollama := ollamaConfig()
+func configFromEnv(sec *secretstore.Store, ctxCap func() int) aigentic.Config {
+	ollama := ollamaConfig(ctxCap)
 	return aigentic.Config{
 		MaxTokens:       atoi(os.Getenv("AIGENTIC_MAX_TOKENS")),
 		MaxContextBytes: atoi(os.Getenv("AIGENTIC_MAX_CONTEXT_BYTES")),
@@ -174,10 +187,12 @@ func mcpProvidersFromEnv() map[string]string {
 }
 
 // ollamaConfig builds the shared local-ollama config (engine + classifier + model listing).
-func ollamaConfig() aigentic.OllamaConfig {
+// ctxCap (may be nil) caps the per-request context window — wired to the live gpuMode setting.
+func ollamaConfig(ctxCap func() int) aigentic.OllamaConfig {
 	return aigentic.OllamaConfig{
 		BaseURL: os.Getenv("OLLAMA_HOST"),
 		Model:   os.Getenv("AIGENTIC_OLLAMA_MODEL"),
+		CtxCap:  ctxCap,
 	}
 }
 
