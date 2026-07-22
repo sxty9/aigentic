@@ -12,6 +12,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/sxty9/aigentic/aigentic"
@@ -37,6 +38,7 @@ type Server struct {
 	v            *auth.Verifier
 	reg          *prizm.Registry
 	grave        graveyard.Graveyard                     // the substrate, exposed directly for owned-store use (Mercury's axioms)
+	graveMu      sync.Mutex                              // serializes guarded grave mutations so a check-then-act write stays atomic (Atomare Zugriffe)
 	sec          *secretstore.Store                      // admin-managed Anthropic key; nil disables the secret endpoints
 	ollamaModels func(context.Context) ([]string, error) // lists local ollama models for the picker; nil => none
 	chats        *chatstore.Store                        // per-user chat history; nil disables the /chats endpoints
