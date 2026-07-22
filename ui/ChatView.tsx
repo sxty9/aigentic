@@ -1,10 +1,8 @@
 import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from 'react';
 import {
-  Badge,
   Box,
   Button,
   EmptyState,
-  Markdown,
   ScrollArea,
   Spinner,
   Stack,
@@ -14,8 +12,10 @@ import {
   type ServiceContextProps,
 } from '@holistic/ui';
 import { EnginePicker, pickerFields, type Picker } from './EnginePicker';
-import { clean, type Msg } from './chatStore';
-import type { AigenticRequest, RunResponse } from './types';
+import { AnswerBody, EngineTag, runAigentic } from './aiExchange';
+import { cleanAnswer } from './aiFiles';
+import { type Msg } from './chatStore';
+import type { AigenticRequest } from './types';
 
 // Per-chat scroll memory (session-scoped, keyed by chat id): returning to a chat restores where
 // you last were, while a new message jumps to the bottom.
@@ -87,8 +87,8 @@ export function ChatView({
       // The model continues the transcript after the trailing "Assistant:".
       const transcript = next.map((m) => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content}`).join('\n\n') + '\n\nAssistant:';
       const data: AigenticRequest = { prompt: transcript, ...pickerFields(picker) };
-      const res = await api.post<RunResponse>('run', { header: { kind: picker.engine }, data });
-      onMessages([...next, { role: 'assistant', content: clean(res.data.output), engine: res.data.engine, model: res.data.model }]);
+      const out = await runAigentic(api, picker.engine, data);
+      onMessages([...next, { role: 'assistant', content: cleanAnswer(out.output), engine: out.engine, model: out.model }]);
     } catch (e) {
       ui.toast({ title: 'Chat failed', description: (e as Error).message, variant: 'error' });
     } finally {
@@ -118,14 +118,9 @@ export function ChatView({
               ) : (
                 <Stack key={i} gap={1} className="max-w-full">
                   <Stack direction="row" align="center" gap={2}>
-                    <Badge variant="accent">{m.engine ?? 'ai'}</Badge>
-                    {m.model && (
-                      <Text variant="caption" color="tertiary">
-                        {m.model}
-                      </Text>
-                    )}
+                    <EngineTag engine={m.engine} model={m.model} size="caption" />
                   </Stack>
-                  {m.content ? <Markdown text={m.content} /> : <Text color="secondary">(empty response)</Text>}
+                  <AnswerBody text={m.content} />
                 </Stack>
               ),
             )}
