@@ -1,12 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ServiceApiClient } from '@holistic/ui';
-import { CHAT_SEED_KEY, type ChatSeed } from './types';
+import { CHAT_SEED_KEY, type Ask, type ChatSeed } from './types';
 
 export interface Msg {
   role: 'user' | 'assistant';
   content: string;
   engine?: string;
   model?: string;
+  // A structured question the assistant posed (interactive turns); the chat view renders it as
+  // clickable options. Persisted with the transcript so it survives a reload (only the last
+  // assistant turn stays interactive).
+  ask?: Ask;
 }
 
 export interface Chat {

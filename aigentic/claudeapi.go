@@ -129,7 +129,7 @@ func NewClaudeAPI(cfg ClaudeAPIConfig, lim Limits) prizm.Processor {
 		body := map[string]any{
 			"model":      model,
 			"max_tokens": answerBudget(in, lim.MaxTokens),
-			"system":     defaultSystem,
+			"system":     askSystem(defaultSystem, in),
 			"messages":   []map[string]any{{"role": "user", "content": claudeUserContent(in, prompt)}},
 		}
 		if effort != "" {
@@ -190,6 +190,6 @@ func NewClaudeAPI(cfg ClaudeAPIConfig, lim Limits) prizm.Processor {
 			TotalTokens:  out.Usage.InputTokens + out.Usage.OutputTokens,
 			Truncated:    truncated,
 		}
-		return Result{Output: text, Engine: KindClaudeAPI, Model: model, Effort: effort, Usage: u, Context: items}, nil
+		return withAsk(Result{Engine: KindClaudeAPI, Model: model, Effort: effort, Usage: u, Context: items}, text, in), nil
 	})
 }

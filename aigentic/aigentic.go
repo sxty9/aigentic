@@ -86,6 +86,7 @@ type Request struct {
 	Inline       []InlineFile   `json:"inline,omitempty"`       // caller-supplied file contents used as context WITHOUT server fs access (e.g. the Files app reads the user's private share and passes the bytes here); same byte budget + binary filter as Paths
 	System       string         `json:"system,omitempty"`       // extra guidance appended to the engine's SYSTEM prompt, so a caller can bind a chat to a domain (e.g. one hosuto server) without putting the context in the user turn. claude-cli only today (--append-system-prompt).
 	MCP          []MCPRef       `json:"mcp,omitempty"`          // MCP servers to attach for THIS run, turning the engine agentic against them. claude-cli only (its `claude` binary is a native MCP client).
+	Interactive  bool           `json:"interactive,omitempty"`  // let the model ask the user a structured multiple-choice question (rendered as clickable options in the chat bubble, à la Claude Code). When set, the SYSTEM prompt carries the ask-protocol instruction and the answer is scanned for a question block that surfaces as Result.Ask. Off => plain prose only, byte-identical to before. Engine-agnostic (see ask.go).
 }
 
 // MCPRef attaches one Model-Context-Protocol server to an agentic run. Name selects a provider the
@@ -146,6 +147,7 @@ type Result struct {
 	Usage    Usage         `json:"usage,omitempty"`    // token accounting (the guard's post-call bookkeeping)
 	Context  []ContextItem `json:"context,omitempty"`  // provenance of the Paths fed to the model
 	Decision *Decision     `json:"decision,omitempty"` // set ONLY by the choose router
+	Ask      *Ask          `json:"ask,omitempty"`      // a structured question the model posed (Interactive runs only); the UI renders it as clickable options. Output holds the prose that preceded it, with the question block stripped. See ask.go.
 }
 
 // Usage is the token accounting reported back by an engine.
