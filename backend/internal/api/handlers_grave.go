@@ -104,6 +104,14 @@ func (s *Server) gravePut(w http.ResponseWriter, r *http.Request, _ *auth.User) 
 		writeErr(w, http.StatusBadRequest, "content must be base64")
 		return
 	}
+	// The no-clobber check and the write together form ONE atomic access: without
+	// serialization two concurrent puts to the same new path both pass the existence check and
+	// the second silently clobbers the first — precisely the invariant this guard promises. The
+	// daemon is the graveyard's sole structured writer, so one mutex over the guarded mutations
+	// makes the compound access indivisible, with no observable intermediate state (Atomare
+	// Zugriffe). Provenance puts use a disjoint ref namespace and never target a structured path.
+	s.graveMu.Lock()
+	defer s.graveMu.Unlock()
 	if !body.Overwrite {
 		if _, found, gerr := s.grave.Get(r.Context(), graveyard.Ref(body.Path)); gerr == nil && found {
 			writeErr(w, http.StatusConflict, "A record already exists at that path")
@@ -138,6 +146,10 @@ func (s *Server) graveMove(w http.ResponseWriter, r *http.Request, _ *auth.User)
 		writeErr(w, http.StatusBadRequest, "from and to are required")
 		return
 	}
+	// Same atomic guard as put: the destination check and the move are one indivisible access
+	// under the shared grave-write lock, so concurrent moves cannot both pass and clobber.
+	s.graveMu.Lock()
+	defer s.graveMu.Unlock()
 	if _, found, gerr := s.grave.Get(r.Context(), graveyard.Ref(body.To)); gerr == nil && found {
 		writeErr(w, http.StatusConflict, "A record already exists at the destination")
 		return
@@ -162,6 +174,10 @@ func (s *Server) graveDelete(w http.ResponseWriter, r *http.Request, _ *auth.Use
 		writeErr(w, http.StatusBadRequest, "path is required")
 		return
 	}
+	// Take the shared grave-write lock so a delete is serialized with put/move: every structured
+	// mutation is ordered, and none observes another's intermediate state (Atomare Zugriffe).
+	s.graveMu.Lock()
+	defer s.graveMu.Unlock()
 	if err := deleter.Delete(r.Context(), graveyard.Ref(path)); err != nil {
 		writeErr(w, http.StatusBadGateway, "Delete failed")
 		return
