@@ -26,3 +26,6 @@ bin/
 node_modules/
 *.out
 coverage/
+
+# Claude Code tooling (agent worktrees, local session state)
+.claude/
