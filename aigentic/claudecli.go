@@ -184,8 +184,10 @@ func NewClaudeCLI(cfg ClaudeCLIConfig, lim Limits) prizm.Processor {
 			args = append(args, allowed...)
 		}
 		// Server-bound guidance goes to the SYSTEM prompt (not the user turn), so it shapes every step
-		// of the agentic loop without being echoed back as if the user had said it.
-		if sys := strings.TrimSpace(in.System); sys != "" {
+		// of the agentic loop without being echoed back as if the user had said it. On an Interactive
+		// run the structured-question protocol is appended here too (same one-place instruction as the
+		// other leaves).
+		if sys := askSystem(strings.TrimSpace(in.System), in); sys != "" {
 			args = append(args, "--append-system-prompt", sys)
 		}
 		prompt := composeCLIPrompt(substrateGuidance(lim, env.Grave), listing, in)
@@ -226,7 +228,7 @@ func NewClaudeCLI(cfg ClaudeCLIConfig, lim Limits) prizm.Processor {
 		if reported == "" {
 			reported = primaryModel(out.ModelUsage)
 		}
-		return Result{Output: out.Result, Engine: KindClaudeCLI, Model: reported, Effort: effort, Usage: u, Context: items}, nil
+		return withAsk(Result{Engine: KindClaudeCLI, Model: reported, Effort: effort, Usage: u, Context: items}, out.Result, in), nil
 	})
 }
 

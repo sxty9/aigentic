@@ -240,11 +240,11 @@ func NewOllama(cfg OllamaConfig, lim Limits) prizm.Processor {
 		if err != nil {
 			return Result{}, err
 		}
-		content, usage, err := c.chat(ctx, model, defaultSystem, prompt, answerBudget(in, lim.MaxTokens))
+		content, usage, err := c.chat(ctx, model, askSystem(defaultSystem, in), prompt, answerBudget(in, lim.MaxTokens))
 		if err != nil {
 			return Result{}, err
 		}
 		usage.Truncated = truncated
-		return Result{Output: content, Engine: KindOllama, Model: model, Usage: usage, Context: items}, nil
+		return withAsk(Result{Engine: KindOllama, Model: model, Usage: usage, Context: items}, content, in), nil
 	})
 }
