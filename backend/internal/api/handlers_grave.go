@@ -74,7 +74,9 @@ func (s *Server) graveGet(w http.ResponseWriter, r *http.Request, _ *auth.User) 
 // gravePut stores a record at a path with a mandatory description (scheme rejects an empty one).
 // It refuses to clobber: a put onto an existing path without overwrite:true is 409, so a
 // mis-addressed write can never silently destroy another record (scheme's PutStructured overwrites
-// in place). The caller decides what a conflict means (merge, rename) and retries with a new path.
+// in place). If the existence check itself cannot be completed, the write is refused rather than
+// risked (fail closed). The caller decides what a conflict means (merge, rename) and retries with a
+// new path.
 func (s *Server) gravePut(w http.ResponseWriter, r *http.Request, _ *auth.User) {
 	st, ok := s.structured()
 	if !ok {
@@ -113,7 +115,15 @@ func (s *Server) gravePut(w http.ResponseWriter, r *http.Request, _ *auth.User) 
 	s.graveMu.Lock()
 	defer s.graveMu.Unlock()
 	if !body.Overwrite {
-		if _, found, gerr := s.grave.Get(r.Context(), graveyard.Ref(body.Path)); gerr == nil && found {
+		_, found, gerr := s.grave.Get(r.Context(), graveyard.Ref(body.Path))
+		if gerr != nil {
+			// Fail CLOSED: a failed existence read cannot prove the path is free, so refuse rather
+			// than risk a write that clobbers a record we merely could not see. A fail-OPEN check
+			// (proceed on error) would silently void the very no-clobber invariant it guards.
+			writeErr(w, http.StatusBadGateway, "Could not verify the target path")
+			return
+		}
+		if found {
 			writeErr(w, http.StatusConflict, "A record already exists at that path")
 			return
 		}
@@ -150,7 +160,14 @@ func (s *Server) graveMove(w http.ResponseWriter, r *http.Request, _ *auth.User)
 	// under the shared grave-write lock, so concurrent moves cannot both pass and clobber.
 	s.graveMu.Lock()
 	defer s.graveMu.Unlock()
-	if _, found, gerr := s.grave.Get(r.Context(), graveyard.Ref(body.To)); gerr == nil && found {
+	_, found, gerr := s.grave.Get(r.Context(), graveyard.Ref(body.To))
+	if gerr != nil {
+		// Fail CLOSED, as in put: an unverifiable destination must not proceed to a move that could
+		// clobber a record we failed to read.
+		writeErr(w, http.StatusBadGateway, "Could not verify the destination path")
+		return
+	}
+	if found {
 		writeErr(w, http.StatusConflict, "A record already exists at the destination")
 		return
 	}
