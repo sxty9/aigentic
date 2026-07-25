@@ -224,6 +224,75 @@ func OllamaModels(ctx context.Context, cfg OllamaConfig) ([]string, error) {
 	return newOllamaClient(cfg).listModels(ctx)
 }
 
+// LoadedModel is one model ollama currently has resident (from /api/ps), enriched for the
+// dashboard's residency readout. It answers, without guessing, "what is loaded, how big, fully on
+// the GPU(s) or spilled to CPU, with which context window, and when does keep-alive unload it" —
+// exactly the transparency for why the SSD spins up (a cold load) and how long a model stays hot.
+type LoadedModel struct {
+	Name          string `json:"name"`          // e.g. "qwen2.5:14b"
+	SizeBytes     int64  `json:"sizeBytes"`     // total resident size (VRAM + any CPU-offloaded layers)
+	VRAMBytes     int64  `json:"vramBytes"`     // bytes actually on the GPU(s)
+	FullyOnGPU    bool   `json:"fullyOnGpu"`    // vramBytes covers the whole model (no CPU spill)
+	ContextLength int    `json:"contextLength"` // num_ctx the resident instance was loaded with (a change forces a reload)
+	ExpiresAt     string `json:"expiresAt"`     // RFC3339 keep-alive unload time ("" if ollama sent none)
+	ExpiresInSec  int    `json:"expiresInSec"`  // seconds until keep-alive unload, at response time; <=0 => imminent
+}
+
+// ps reads /api/ps — the models ollama currently holds in VRAM/RAM, with their keep-alive expiry
+// and the context window each was loaded with. ollama owns this truth; we only mirror and enrich it
+// (no evaluation of our own). now is injected so tests can assert ExpiresInSec deterministically.
+func (c *ollamaClient) ps(ctx context.Context, now time.Time) ([]LoadedModel, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+"/api/ps", nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.client.Do(req)
+	if err != nil {
+		// A dial error (no ollama running) is unavailability, not a bad request — same mapping as
+		// the chat path, so the HTTP shell can surface it as 503 / an empty readout.
+		return nil, fmt.Errorf("%w: ollama: %v", ErrProcessorUnavailable, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("%w: ollama /api/ps: status %d", ErrProcessorUnavailable, resp.StatusCode)
+	}
+	var out struct {
+		Models []struct {
+			Name          string    `json:"name"`
+			Size          int64     `json:"size"`
+			SizeVRAM      int64     `json:"size_vram"`
+			ContextLength int       `json:"context_length"`
+			ExpiresAt     time.Time `json:"expires_at"`
+		} `json:"models"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, err
+	}
+	models := make([]LoadedModel, 0, len(out.Models))
+	for _, m := range out.Models {
+		lm := LoadedModel{
+			Name:          m.Name,
+			SizeBytes:     m.Size,
+			VRAMBytes:     m.SizeVRAM,
+			FullyOnGPU:    m.Size > 0 && m.SizeVRAM >= m.Size,
+			ContextLength: m.ContextLength,
+		}
+		if !m.ExpiresAt.IsZero() {
+			lm.ExpiresAt = m.ExpiresAt.Format(time.RFC3339)
+			lm.ExpiresInSec = int(m.ExpiresAt.Sub(now).Seconds())
+		}
+		models = append(models, lm)
+	}
+	return models, nil
+}
+
+// OllamaStatus reports the models ollama currently has resident (from /api/ps), enriched with the
+// keep-alive time remaining and the loaded context window. Source for the dashboard's local-model
+// residency readout; best-effort — the caller treats any error as "nothing resident".
+func OllamaStatus(ctx context.Context, cfg OllamaConfig) ([]LoadedModel, error) {
+	return newOllamaClient(cfg).ps(ctx, time.Now())
+}
+
 // NewOllama returns the local-ollama leaf processor (Kind "ollama"). lim carries the
 // server-side answer-token and path-context guards.
 func NewOllama(cfg OllamaConfig, lim Limits) prizm.Processor {

@@ -97,7 +97,7 @@ func newGraveServer(t *testing.T, g graveyard.Graveyard) (*Server, string) {
 	reg := prizm.NewRegistry(0)
 	td := t.TempDir()
 	store := secretstore.New(td+"/anthropic.key", td+"/users", "")
-	return New(auth.NewVerifier(secret, group), reg, g, store, nil, nil, ""), username
+	return New(auth.NewVerifier(secret, group), reg, g, store, nil, nil, nil, ""), username
 }
 
 func gravePutBody(path, desc, content string, overwrite bool) []byte {

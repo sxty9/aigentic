@@ -33,7 +33,7 @@ func newSchemeServer(t *testing.T) (*Server, func()) {
 	td := t.TempDir()
 	store := secretstore.New(td+"/anthropic.key", td+"/users", "")
 	_, group := currentUser(t)
-	return New(auth.NewVerifier(secret, group), reg, g, store, nil, nil, ""), func() { _ = g.Close() }
+	return New(auth.NewVerifier(secret, group), reg, g, store, nil, nil, nil, ""), func() { _ = g.Close() }
 }
 
 // TestGraveEndpointsRoundTrip drives the owned-store surface end to end against a real scheme

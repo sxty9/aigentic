@@ -79,6 +79,8 @@ func main() {
 	srv := &http.Server{
 		Handler: api.New(v, reg, g, sec, func(ctx context.Context) ([]string, error) {
 			return aigentic.OllamaModels(ctx, ollamaConfig(ctxCap))
+		}, func(ctx context.Context) ([]aigentic.LoadedModel, error) {
+			return aigentic.OllamaStatus(ctx, ollamaConfig(ctxCap))
 		}, chats, internalSecret()).Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
