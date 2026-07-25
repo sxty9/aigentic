@@ -1,12 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ServiceApiClient } from '@holistic/ui';
-import { CHAT_SEED_KEY, type ChatSeed } from './types';
+import { cleanAnswer } from './aiFiles';
+import { CHAT_SEED_KEY, type Ask, type ChatSeed } from './types';
 
 export interface Msg {
   role: 'user' | 'assistant';
   content: string;
   engine?: string;
   model?: string;
+  // A structured question the assistant posed (interactive turns); the chat view renders it as
+  // clickable options. Persisted with the transcript so it survives a reload (only the last
+  // assistant turn stays interactive).
+  ask?: Ask;
 }
 
 export interface Chat {
@@ -36,15 +41,6 @@ function titleOf(messages: Msg[]): string {
   return t.length > 48 ? `${t.slice(0, 48)}…` : t;
 }
 
-// clean strips the leading "Assistant:" the transcript framing can echo, plus any file-context
-// tags carried over from a seeded handoff. Shared by the store (seed) and the chat view (replies).
-export function clean(s: string): string {
-  return s
-    .replace(/^\s*Assistant:\s*/i, '')
-    .replace(/<\/?(file|attachment)\b[^>]*>/g, '')
-    .trim();
-}
-
 function seedMessages(): Msg[] | null {
   try {
     const raw = localStorage.getItem(CHAT_SEED_KEY);
@@ -54,7 +50,7 @@ function seedMessages(): Msg[] | null {
     if (!s?.prompt && !s?.answer) return null;
     return [
       { role: 'user', content: s.prompt || '(files)' },
-      { role: 'assistant', content: clean(s.answer || ''), engine: s.engine, model: s.model },
+      { role: 'assistant', content: cleanAnswer(s.answer || ''), engine: s.engine, model: s.model },
     ];
   } catch {
     return null;

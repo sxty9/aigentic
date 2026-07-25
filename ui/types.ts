@@ -22,6 +22,25 @@ export interface AigenticRequest {
   maxTokens?: number;
   claude?: { effort?: string };
   choose?: { force?: string };
+  // Let the model ask a structured multiple-choice question, answerable by clicking options in the
+  // bubble (à la Claude Code). When set, a question surfaces on Result.ask; see the aigentic backend.
+  interactive?: boolean;
+}
+
+// A structured question the model posed on an interactive turn — rendered as clickable options in
+// the chat bubble. Mirrors the aigentic backend's Ask shape (and @holistic/ui's AskChoice props).
+export interface AskOption {
+  label: string;
+  description?: string;
+}
+export interface AskQuestion {
+  header?: string;
+  question: string;
+  options: AskOption[];
+  multiSelect?: boolean;
+}
+export interface Ask {
+  questions: AskQuestion[];
 }
 
 // The single aigentic result, shared by all four kinds.
@@ -32,6 +51,7 @@ export interface Result {
   usage?: { inputTokens?: number; outputTokens?: number; totalTokens?: number; truncated?: boolean };
   context?: { path: string; ref?: string; bytes?: number; skipped?: string }[];
   decision?: { picked: string; complexity?: string; reason?: string; source: string; fallback?: boolean };
+  ask?: Ask;
 }
 
 // A prizm Response: Header₀ + opaque Data₀. For aigentic, Data is a Result.

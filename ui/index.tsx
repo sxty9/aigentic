@@ -1,7 +1,6 @@
 import { BoltIcon, registerFolderAction, registerViewerAction, userHasRight, type ServicePlugin } from '@holistic/ui';
 import { Dashboard } from './Dashboard';
-import { AskAiPanel } from './AskAiPanel';
-import { AskAiFilePanel } from './AskAiFilePanel';
+import { AskAiFolderPanel, AskAiFilePanel } from './aiExchange';
 import { aiReadable } from './aiFiles';
 
 // The end-user AI feature is delivered ENTIRELY by aigentic, contributed into two shared surfaces
@@ -14,7 +13,7 @@ registerFolderAction({
   label: 'Ask AI',
   icon: BoltIcon,
   visible: (user) => userHasRight(user, 'hp_aigentic_run'),
-  Panel: AskAiPanel,
+  Panel: AskAiFolderPanel,
 });
 
 // 2) File-level action inside the shared FilePreview — asks about the ONE displayed file, wherever

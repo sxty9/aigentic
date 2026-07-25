@@ -5,7 +5,9 @@ package api
 import (
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"sync"
 	"testing"
 
 	"github.com/sxty9/aigentic/aigentic"
@@ -31,7 +33,7 @@ func newSchemeServer(t *testing.T) (*Server, func()) {
 	td := t.TempDir()
 	store := secretstore.New(td+"/anthropic.key", td+"/users", "")
 	_, group := currentUser(t)
-	return New(auth.NewVerifier(secret, group), reg, g, store, nil, nil), func() { _ = g.Close() }
+	return New(auth.NewVerifier(secret, group), reg, g, store, nil, nil, ""), func() { _ = g.Close() }
 }
 
 // TestGraveEndpointsRoundTrip drives the owned-store surface end to end against a real scheme
@@ -110,5 +112,64 @@ func TestGraveEndpointsRoundTrip(t *testing.T) {
 	// an empty description is rejected (scheme's mandatory Beschreibung)
 	if r := put("axiome/x/leer.md", "  ", "irgendwas", false); r.StatusCode != http.StatusBadRequest {
 		t.Fatalf("empty description: got %d, want 400", r.StatusCode)
+	}
+}
+
+// TestGravePutIfAbsentIsAtomic hammers one fresh path with concurrent put-if-absent writes. The
+// no-clobber guard is a check-then-act compound access; without serialization two writers both
+// pass the existence check and the second silently clobbers the first. Exactly one writer must win
+// (200), every other must see 409, and the surviving record must be — byte for byte — the winner's,
+// never a clobber or a partial (Atomare Zugriffe: unteilbar, ohne beobachtbaren Zwischenzustand).
+func TestGravePutIfAbsentIsAtomic(t *testing.T) {
+	s, cleanup := newSchemeServer(t)
+	defer cleanup()
+	username, _ := currentUser(t)
+	access := mintAccess(t, username)
+	const csrf = "csrf-token"
+	const path = "axiome/race/contested.md"
+
+	const n = 12
+	type outcome struct{ idx, code int }
+	out := make(chan outcome, n)
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			body, _ := json.Marshal(map[string]any{
+				"path": path, "description": "contested",
+				"content":   base64.StdEncoding.EncodeToString([]byte(fmt.Sprintf("writer-%d", i))),
+				"overwrite": false,
+			})
+			<-start // release all writers at once to maximise contention
+			out <- outcome{i, do(t, s, "POST", base+"grave/put", body, access, csrf).Result().StatusCode}
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+	close(out)
+
+	winners, conflicts, winner := 0, 0, -1
+	for o := range out {
+		switch o.code {
+		case http.StatusOK:
+			winners, winner = winners+1, o.idx
+		case http.StatusConflict:
+			conflicts++
+		default:
+			t.Fatalf("writer %d: unexpected status %d", o.idx, o.code)
+		}
+	}
+	if winners != 1 {
+		t.Fatalf("put-if-absent not atomic: %d writers won (want exactly 1), %d saw 409", winners, conflicts)
+	}
+	// The one surviving record must be exactly the winner's bytes — never a clobber or a partial.
+	rec := do(t, s, "GET", base+"grave/get?path="+path, nil, access, "")
+	var got struct{ Content string }
+	_ = json.Unmarshal(rec.Body.Bytes(), &got)
+	b, _ := base64.StdEncoding.DecodeString(got.Content)
+	if want := fmt.Sprintf("writer-%d", winner); string(b) != want {
+		t.Fatalf("surviving record = %q, want the winner's %q (clobbered)", b, want)
 	}
 }

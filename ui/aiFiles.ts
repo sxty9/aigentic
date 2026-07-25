@@ -1,5 +1,5 @@
-// Helpers shared by the two "Ask AI" panels: the folder-scope one (Files toolbar) and the
-// single-file one mounted in the shared FilePreview (Files + Mail attachments).
+// Pure (no-JSX, no-DOM) helpers shared across every aigentic AI surface — the folder + single-file
+// "Ask AI" panels and the chat tab: file→inline-part encoding, answer cleaning, and readability.
 import type { FileEntry } from '@holistic/ui';
 
 // An inline file part sent to the backend: text rides in `content`; images/PDFs ride as base64 in
@@ -17,9 +17,14 @@ export function bytesToBase64(bytes: Uint8Array): string {
   return btoa(binary);
 }
 
-// cleanOutput strips the context tags the backend wraps files in, before rendering.
-export function cleanOutput(s: string): string {
+// cleanAnswer normalises a model reply for display: it drops the leading "Assistant:" the
+// transcript framing can echo, strips the <file>/<attachment> context tags the backend wraps
+// files in, collapses runs of blank lines, and trims. It is the ONE cleaner for AI answers —
+// shared by the "Ask AI" panels (single-shot replies) and the chat (transcript replies + seeds)
+// so the two never drift. Idempotent, so a double-clean (panel → chat handoff) is a no-op.
+export function cleanAnswer(s: string): string {
   return s
+    .replace(/^\s*Assistant:\s*/i, '')
     .replace(/<\/?(file|attachment)\b[^>]*>/g, '')
     .replace(/\n{3,}/g, '\n\n')
     .trim();

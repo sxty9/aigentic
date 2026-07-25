@@ -1,10 +1,9 @@
 import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from 'react';
 import {
-  Badge,
+  AskChoice,
   Box,
   Button,
   EmptyState,
-  Markdown,
   ScrollArea,
   Spinner,
   Stack,
@@ -14,14 +13,25 @@ import {
   type ServiceContextProps,
 } from '@holistic/ui';
 import { EnginePicker, pickerFields, type Picker } from './EnginePicker';
-import { clean, type Msg } from './chatStore';
-import type { AigenticRequest, RunResponse } from './types';
+import { AnswerBody, EngineTag, runAigentic } from './aiExchange';
+import { cleanAnswer } from './aiFiles';
+import { type Msg } from './chatStore';
+import type { AigenticRequest } from './types';
 
 // Per-chat scroll memory (session-scoped, keyed by chat id): returning to a chat restores where
 // you last were, while a new message jumps to the bottom.
 const scrollMem = new Map<string, number>();
 const SCROLL_ID = 'aigentic-chat-scroll';
 const scrollEl = () => document.getElementById(SCROLL_ID);
+
+// msgText is a message's text for the re-sent transcript. An assistant turn that was ONLY a
+// structured question (no prose) still needs words so the model keeps context on the next turn;
+// fall back to the question text.
+function msgText(m: Msg): string {
+  if (m.content) return m.content;
+  if (m.ask) return m.ask.questions.map((q) => q.question).join('\n');
+  return '';
+}
 
 // ChatView is the conversation pane for one chat. It is controlled: the message list lives in the
 // chat store (so it persists + drives the sidebar), and the picker is owned by the parent (so the
@@ -76,19 +86,23 @@ export function ChatView({
     if (el) scrollMem.set(chatId, el.scrollTop);
   }
 
-  async function send() {
-    const text = input.trim();
+  // send(answer?) posts a turn. With no argument it sends the composer's text; with an argument it
+  // sends a picked answer from a structured question (the composer is left untouched).
+  async function send(answer?: string) {
+    const fromComposer = answer === undefined;
+    const text = (answer ?? input).trim();
     if (!text || busy) return;
     const next: Msg[] = [...messages, { role: 'user', content: text }];
     onMessages(next);
-    setInput('');
+    if (fromComposer) setInput('');
     setBusy(true);
     try {
-      // The model continues the transcript after the trailing "Assistant:".
-      const transcript = next.map((m) => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content}`).join('\n\n') + '\n\nAssistant:';
-      const data: AigenticRequest = { prompt: transcript, ...pickerFields(picker) };
-      const res = await api.post<RunResponse>('run', { header: { kind: picker.engine }, data });
-      onMessages([...next, { role: 'assistant', content: clean(res.data.output), engine: res.data.engine, model: res.data.model }]);
+      // The model continues the transcript after the trailing "Assistant:". interactive:true lets it
+      // reply with a structured question (surfaced on the Result's ask, rendered as clickable options).
+      const transcript = next.map((m) => `${m.role === 'user' ? 'User' : 'Assistant'}: ${msgText(m)}`).join('\n\n') + '\n\nAssistant:';
+      const data: AigenticRequest = { prompt: transcript, interactive: true, ...pickerFields(picker) };
+      const out = await runAigentic(api, picker.engine, data);
+      onMessages([...next, { role: 'assistant', content: cleanAnswer(out.output), engine: out.engine, model: out.model, ask: out.ask }]);
     } catch (e) {
       ui.toast({ title: 'Chat failed', description: (e as Error).message, variant: 'error' });
     } finally {
@@ -118,14 +132,16 @@ export function ChatView({
               ) : (
                 <Stack key={i} gap={1} className="max-w-full">
                   <Stack direction="row" align="center" gap={2}>
-                    <Badge variant="accent">{m.engine ?? 'ai'}</Badge>
-                    {m.model && (
-                      <Text variant="caption" color="tertiary">
-                        {m.model}
-                      </Text>
-                    )}
+                    <EngineTag engine={m.engine} model={m.model} size="caption" />
                   </Stack>
-                  {m.content ? <Markdown text={m.content} /> : <Text color="secondary">(empty response)</Text>}
+                  {m.ask && !m.content ? null : <AnswerBody text={m.content} />}
+                  {m.ask && m.ask.questions.length > 0 && (
+                    <AskChoice
+                      questions={m.ask.questions}
+                      onAnswer={(t) => void send(t)}
+                      disabled={busy || i !== messages.length - 1}
+                    />
+                  )}
                 </Stack>
               ),
             )}
@@ -154,7 +170,7 @@ export function ChatView({
               placeholder="Message the AI…  (Enter to send, Shift+Enter for a new line)"
             />
           </Stack>
-          <Button variant="primary" loading={busy} disabled={!input.trim()} onClick={send}>
+          <Button variant="primary" loading={busy} disabled={!input.trim()} onClick={() => void send()}>
             Send
           </Button>
         </Stack>
