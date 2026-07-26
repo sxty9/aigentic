@@ -440,16 +440,22 @@ func (s *Server) chatsPut(w http.ResponseWriter, r *http.Request, u *auth.User) 
 		writeErr(w, http.StatusRequestEntityTooLarge, "Chat history too large")
 		return
 	}
-	switch err := s.chats.Save(u.Username, body); {
-	case errors.Is(err, chatstore.ErrBadJSON):
-		writeErr(w, http.StatusBadRequest, "Invalid chat data")
-	case errors.Is(err, chatstore.ErrTooLarge):
+	// The pool is passive (Passive Speicher): the blob's size and shape are EVALUATED here, outside
+	// the store, which then persists opaque bytes. A JSON array is the only accepted shape.
+	if len(body) > chatstore.MaxBytes {
 		writeErr(w, http.StatusRequestEntityTooLarge, "Chat history too large")
-	case err != nil:
-		writeErr(w, http.StatusInternalServerError, "Could not save chats")
-	default:
-		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+		return
 	}
+	var probe []json.RawMessage
+	if json.Unmarshal(body, &probe) != nil {
+		writeErr(w, http.StatusBadRequest, "Invalid chat data")
+		return
+	}
+	if err := s.chats.Save(u.Username, body); err != nil {
+		writeErr(w, http.StatusInternalServerError, "Could not save chats")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
 // paidKind reports whether a kind can reach the metered Anthropic API.

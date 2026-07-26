@@ -18,6 +18,8 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+
+	"github.com/sxty9/aigentic/backend/internal/atomicfile"
 )
 
 const (
@@ -290,32 +292,12 @@ func (s *Store) removeUserFile(subject, name string) error {
 	return nil
 }
 
-// writeFileAtomic creates the parent dir (0700) and publishes content (0600) via a uniquely
-// named temp file renamed over the target.
+// writeFileAtomic persists a credential (0600) through the shared atomic-write primitive
+// (Atomare Zugriffe). The trailing newline is a file-format convenience — stripped again on read —
+// and is the secret store's own detail; the atomic temp+rename mechanics live once in atomicfile so
+// every pool inherits the same guarantee instead of re-implementing it.
 func writeFileAtomic(path, content string) error {
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
-	}
-	tmp, err := os.CreateTemp(dir, ".tmp-*")
-	if err != nil {
-		return err
-	}
-	tmpName := tmp.Name()
-	if _, err := tmp.WriteString(content + "\n"); err != nil {
-		_ = tmp.Close()
-		_ = os.Remove(tmpName)
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		_ = os.Remove(tmpName)
-		return err
-	}
-	if err := os.Rename(tmpName, path); err != nil {
-		_ = os.Remove(tmpName)
-		return err
-	}
-	return nil
+	return atomicfile.Write(path, []byte(content+"\n"), 0o600)
 }
 
 // --- validation + masking ---

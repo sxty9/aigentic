@@ -14,6 +14,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/sxty9/aigentic/aigentic"
 	"github.com/sxty9/aigentic/backend/internal/auth"
+	"github.com/sxty9/aigentic/backend/internal/chatstore"
 	secretstore "github.com/sxty9/aigentic/backend/internal/secret"
 	"github.com/sxty9/prizm/graveyard"
 	"github.com/sxty9/prizm/prizm"
@@ -311,6 +312,59 @@ func TestPerUserCredentials(t *testing.T) {
 	}
 	if rec := do(t, s, "POST", base+"claude/unlink", nil, access, csrf); rec.Code != http.StatusOK {
 		t.Fatalf("unlink: %d", rec.Code)
+	}
+}
+
+// newChatServer wires a Server with a real chatstore (under a temp users dir), the running account
+// as admin (so it holds every right, as in the other api tests).
+func newChatServer(t *testing.T, adminGroup string) *Server {
+	t.Helper()
+	reg := prizm.NewRegistry(0)
+	g := graveyard.NewMemory()
+	td := t.TempDir()
+	store := secretstore.New(filepath.Join(td, "anthropic.key"), filepath.Join(td, "users"), "")
+	chats := chatstore.New(filepath.Join(td, "users"))
+	return New(auth.NewVerifier(secret, adminGroup), reg, g, store, nil, nil, chats, "")
+}
+
+// TestChatsRoundTripAndValidation drives the /chats endpoints: GET defaults to [], a valid array
+// PUT round-trips VERBATIM, a non-array body is refused (400) and an oversize body (413) — proving
+// the shape/size evaluation now lives in the handler (outside the passive pool) — and the write
+// needs CSRF.
+func TestChatsRoundTripAndValidation(t *testing.T) {
+	username, group := currentUser(t)
+	s := newChatServer(t, group)
+	access := mintAccess(t, username)
+	const csrf = "csrf-token"
+
+	// Default: an empty array, never an error.
+	if rec := do(t, s, "GET", base+"chats", nil, access, ""); rec.Code != http.StatusOK || strings.TrimSpace(rec.Body.String()) != "[]" {
+		t.Fatalf("default chats = %d %q, want 200 []", rec.Code, rec.Body)
+	}
+
+	// A valid array PUT round-trips byte for byte.
+	blob := `[{"id":"1","title":"hi","messages":[]}]`
+	if rec := do(t, s, "PUT", base+"chats", []byte(blob), access, csrf); rec.Code != http.StatusOK {
+		t.Fatalf("put chats: %d %s", rec.Code, rec.Body)
+	}
+	if rec := do(t, s, "GET", base+"chats", nil, access, ""); strings.TrimSpace(rec.Body.String()) != blob {
+		t.Fatalf("round-trip = %q, want %q", rec.Body, blob)
+	}
+
+	// A non-array body is rejected by the handler (evaluation outside the pool).
+	if rec := do(t, s, "PUT", base+"chats", []byte(`{"not":"an array"}`), access, csrf); rec.Code != http.StatusBadRequest {
+		t.Fatalf("non-array: got %d want 400 (%s)", rec.Code, rec.Body)
+	}
+
+	// An oversize body is rejected (413) — the size cap is enforced at the edge, not in the store.
+	big := bytes.Repeat([]byte("a"), chatstore.MaxBytes+1)
+	if rec := do(t, s, "PUT", base+"chats", big, access, csrf); rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("oversize: got %d want 413", rec.Code)
+	}
+
+	// Missing CSRF on the mutating write => 403.
+	if rec := do(t, s, "PUT", base+"chats", []byte(blob), access, ""); rec.Code != http.StatusForbidden {
+		t.Fatalf("missing csrf: got %d want 403", rec.Code)
 	}
 }
 

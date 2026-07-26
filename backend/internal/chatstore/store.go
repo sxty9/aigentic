@@ -1,27 +1,27 @@
 // Package chatstore persists a user's chat history server-side, keyed by the server-stamped
-// holistic Subject, so chats follow the account across devices. The frontend's chat list is
-// stored as one OPAQUE JSON blob per user at <usersDir>/<subject>/chats.json (0600): the backend
-// never parses the chat structure — it only checks the blob is a JSON array within a size cap.
-// Layout + the SafeSubject path-traversal guard mirror the per-user secret store.
+// holistic Subject, so chats follow the account across devices.
+//
+// It is a PASSIVE pool (Holistic "Passive Speicher" axiom): it holds one OPAQUE byte blob per user
+// at <usersDir>/<subject>/chats.json (0600) and never interprets it. The blob's shape (a JSON array)
+// and size are evaluated OUTSIDE the pool — by the HTTP handler that owns the /chats endpoint —
+// exactly as the graveyard store keeps its policy in the calling service. Reads and writes are
+// atomic (Atomare Zugriffe) via the shared atomicfile primitive. Layout + the SafeSubject
+// path-traversal guard mirror the per-user secret store.
 package chatstore
 
 import (
-	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
 
+	"github.com/sxty9/aigentic/backend/internal/atomicfile"
 	secretstore "github.com/sxty9/aigentic/backend/internal/secret"
 )
 
-// MaxBytes caps a user's stored chat history (defense against a runaway client).
+// MaxBytes caps a user's stored chat history (defense against a runaway client). The cap is
+// EVALUATED by the caller (the HTTP edge), not here: a passive pool does not evaluate the data it
+// holds. It is exported so the single evaluation point references one canonical constant.
 const MaxBytes = 8 << 20 // 8 MiB
-
-// ErrTooLarge / ErrBadJSON map to 413 / 400 at the HTTP edge.
-var (
-	ErrTooLarge = errors.New("chat history too large")
-	ErrBadJSON  = errors.New("chat data is not a JSON array")
-)
 
 var empty = []byte("[]")
 
@@ -41,7 +41,8 @@ func (s *Store) path(subject string) (string, error) {
 	return filepath.Join(s.usersDir, safe, "chats.json"), nil
 }
 
-// Load returns the user's stored chat blob, or "[]" when none exists yet.
+// Load returns the user's stored chat blob VERBATIM, or "[]" when none exists yet. It never parses
+// the blob (Passive Speicher) and the read is atomic (one whole file or the empty default).
 func (s *Store) Load(subject string) ([]byte, error) {
 	p, err := s.path(subject)
 	if err != nil {
@@ -57,51 +58,12 @@ func (s *Store) Load(subject string) ([]byte, error) {
 	return b, nil
 }
 
-// Save validates that data is a JSON array within the size cap, then persists it atomically (0600).
+// Save persists data as one opaque blob atomically (0600). It does NOT inspect the bytes: shape and
+// size are the caller's to validate (Passive Speicher — every evaluation happens outside the pool).
 func (s *Store) Save(subject string, data []byte) error {
-	if len(data) > MaxBytes {
-		return ErrTooLarge
-	}
-	var probe []json.RawMessage
-	if err := json.Unmarshal(data, &probe); err != nil {
-		return ErrBadJSON
-	}
 	p, err := s.path(subject)
 	if err != nil {
 		return err
 	}
-	return writeFileAtomic(p, data)
-}
-
-// writeFileAtomic creates the parent dir (0700) and publishes content (0600) via a uniquely
-// named temp file renamed over the target.
-func writeFileAtomic(path string, content []byte) error {
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
-	}
-	tmp, err := os.CreateTemp(dir, ".tmp-*")
-	if err != nil {
-		return err
-	}
-	tmpName := tmp.Name()
-	if _, err := tmp.Write(content); err != nil {
-		_ = tmp.Close()
-		_ = os.Remove(tmpName)
-		return err
-	}
-	if err := tmp.Chmod(0o600); err != nil {
-		_ = tmp.Close()
-		_ = os.Remove(tmpName)
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		_ = os.Remove(tmpName)
-		return err
-	}
-	if err := os.Rename(tmpName, path); err != nil {
-		_ = os.Remove(tmpName)
-		return err
-	}
-	return nil
+	return atomicfile.Write(p, data, 0o600)
 }
