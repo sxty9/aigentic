@@ -1,4 +1,4 @@
-import { Spinner, Stack, type ServiceContextProps } from '@holistic/ui';
+import { Spinner, Stack, type ServiceContextProps } from '@holisdk/ui';
 import { usePicker } from './EnginePicker';
 import { useChats } from './chatStore';
 import { ChatSidebar } from './ChatSidebar';

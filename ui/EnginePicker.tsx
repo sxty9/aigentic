@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { SegmentedControl, Stack, Text, type ServiceApiClient } from '@holistic/ui';
+import { SegmentedControl, Stack, Text, type ServiceApiClient } from '@holisdk/ui';
 import type { ModelCatalog } from './types';
 
 // The engine/model/effort picker, shared by the Files "Ask AI" dialog and the chat tab so the

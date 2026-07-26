@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import type { ServiceApiClient } from '@holistic/ui';
+import type { ServiceApiClient } from '@holisdk/ui';
 import type { LoadedModel, OllamaStatus } from './types';
 
 // Match a resident model name to a picker selection. ollama tags are "name:tag"; an empty want

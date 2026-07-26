@@ -1,4 +1,4 @@
-import { Button, IconButton, PlusIcon, ScrollArea, SearchField, Stack, Text, TrashIcon } from '@holistic/ui';
+import { Button, IconButton, PlusIcon, ScrollArea, SearchField, Stack, Text, TrashIcon } from '@holisdk/ui';
 import type { ChatStore } from './chatStore';
 
 // ChatSidebar is the Perplexity-style chat list: a "New chat" button, a search box that filters
