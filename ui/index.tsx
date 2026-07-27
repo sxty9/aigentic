@@ -2,6 +2,7 @@ import { BoltIcon, registerFolderAction, registerViewerAction, userHasRight, typ
 import { Dashboard } from './Dashboard';
 import { AskAiFolderPanel, AskAiFilePanel } from './aiExchange';
 import { aiReadable } from './aiFiles';
+import './i18n';
 
 // The end-user AI feature is delivered ENTIRELY by aigentic, contributed into two shared surfaces
 // (no Files/Mail code knows about it). Visible to anyone holding the run right (admins always);

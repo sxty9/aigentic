@@ -33,11 +33,15 @@ function newId(): string {
   }
 }
 
+// The placeholder title of a chat with no user message yet. Kept as a stable, language-neutral
+// sentinel in the stored data; the sidebar localizes it on display (see ChatSidebar).
+export const NEW_CHAT_TITLE = 'New chat';
+
 // titleOf derives a chat's sidebar label from its first user message.
 function titleOf(messages: Msg[]): string {
   const first = messages.find((m) => m.role === 'user');
   const t = (first?.content ?? '').trim().replace(/\s+/g, ' ');
-  if (!t) return 'New chat';
+  if (!t) return NEW_CHAT_TITLE;
   return t.length > 48 ? `${t.slice(0, 48)}…` : t;
 }
 
@@ -107,7 +111,7 @@ export function useChats(api: ServiceApiClient): ChatStore {
         next = [c, ...loaded];
         active = c.id;
       } else if (loaded.length === 0) {
-        const c: Chat = { id: newId(), title: 'New chat', messages: [], updatedAt: Date.now() };
+        const c: Chat = { id: newId(), title: NEW_CHAT_TITLE, messages: [], updatedAt: Date.now() };
         next = [c];
         active = c.id;
       }
@@ -148,7 +152,7 @@ export function useChats(api: ServiceApiClient): ChatStore {
   const selectChat = useCallback((id: string) => setActiveId(id), []);
 
   const newChat = useCallback(() => {
-    const c: Chat = { id: newId(), title: 'New chat', messages: [], updatedAt: Date.now() };
+    const c: Chat = { id: newId(), title: NEW_CHAT_TITLE, messages: [], updatedAt: Date.now() };
     setChats((prev) => [c, ...prev]);
     setActiveId(c.id);
   }, []);

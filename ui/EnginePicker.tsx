@@ -1,15 +1,15 @@
 import { useEffect, useMemo, useState } from 'react';
-import { SegmentedControl, Stack, Text, type ServiceApiClient } from '@holistic/ui';
+import { SegmentedControl, Stack, Text, useT, type ServiceApiClient } from '@holistic/ui';
 import type { ModelCatalog } from './types';
 
 // The engine/model/effort picker, shared by the Files "Ask AI" dialog and the chat tab so the
 // two never drift. Design goal: no ambiguous "Default" — you always see the concrete model that
 // will run. Model + Effort are shown only where they apply.
 const ENGINES = [
-  { value: 'choose', label: 'Auto' },
-  { value: 'ollama', label: 'Local' },
-  { value: 'claude-cli', label: 'Claude CLI' },
-  { value: 'claude-api', label: 'Claude API' },
+  { value: 'choose', key: 'aigentic.engine.auto' },
+  { value: 'ollama', key: 'aigentic.engine.local' },
+  { value: 'claude-cli', key: 'aigentic.engine.cli' },
+  { value: 'claude-api', key: 'aigentic.engine.api' },
 ] as const;
 // Used until GET /models answers (and if it can't list the static Claude set).
 const CLAUDE_FALLBACK = [
@@ -21,12 +21,12 @@ const CLAUDE_FALLBACK = [
 // (--effort) — but not ollama. "Auto" = send no override, let the model pick; the rest are the
 // CLI/API levels low|medium|high|xhigh|max.
 const EFFORTS = [
-  { value: '', label: 'Auto' },
-  { value: 'low', label: 'Low' },
-  { value: 'medium', label: 'Med' },
-  { value: 'high', label: 'High' },
-  { value: 'xhigh', label: 'X-High' },
-  { value: 'max', label: 'Max' },
+  { value: '', key: 'aigentic.effort.auto' },
+  { value: 'low', key: 'aigentic.effort.low' },
+  { value: 'medium', key: 'aigentic.effort.med' },
+  { value: 'high', key: 'aigentic.effort.high' },
+  { value: 'xhigh', key: 'aigentic.effort.xhigh' },
+  { value: 'max', key: 'aigentic.effort.max' },
 ] as const;
 
 const usesEffort = (engine: string) => engine === 'claude-cli' || engine === 'claude-api';
@@ -82,33 +82,34 @@ export function pickerFields(p: Picker): { model?: string; claude?: { effort: st
 
 // EnginePicker renders the three controls; Model/Effort appear only where meaningful.
 export function EnginePicker({ p, compact }: { p: Picker; compact?: boolean }) {
+  const t = useT();
   return (
     <Stack direction="row" gap={3} align="end" className="flex-wrap">
       <Stack gap={1}>
         {!compact && (
           <Text variant="caption" color="tertiary">
-            Engine
+            {t('aigentic.picker.engine')}
           </Text>
         )}
-        <SegmentedControl value={p.engine} onChange={p.setEngine} options={ENGINES.map((e) => ({ value: e.value, label: e.label }))} />
+        <SegmentedControl value={p.engine} onChange={p.setEngine} options={ENGINES.map((e) => ({ value: e.value, label: t(e.key) }))} />
       </Stack>
 
       {p.engine === 'choose' ? (
         <Text variant="caption" color="tertiary" className="pb-2">
-          Auto picks the engine &amp; model for you.
+          {t('aigentic.picker.autoHint')}
         </Text>
       ) : p.modelOptions.length > 0 ? (
         <Stack gap={1}>
           {!compact && (
             <Text variant="caption" color="tertiary">
-              Model
+              {t('aigentic.picker.model')}
             </Text>
           )}
           <SegmentedControl value={p.model} onChange={p.setModel} options={p.modelOptions} />
         </Stack>
       ) : p.engine === 'ollama' ? (
         <Text variant="caption" color="tertiary" className="pb-2">
-          No local models pulled on the server.
+          {t('aigentic.picker.noLocal')}
         </Text>
       ) : null}
 
@@ -116,10 +117,10 @@ export function EnginePicker({ p, compact }: { p: Picker; compact?: boolean }) {
         <Stack gap={1}>
           {!compact && (
             <Text variant="caption" color="tertiary">
-              Effort
+              {t('aigentic.picker.effort')}
             </Text>
           )}
-          <SegmentedControl value={p.effort} onChange={p.setEffort} options={EFFORTS.map((e) => ({ value: e.value, label: e.label }))} />
+          <SegmentedControl value={p.effort} onChange={p.setEffort} options={EFFORTS.map((e) => ({ value: e.value, label: t(e.key) }))} />
         </Stack>
       )}
     </Stack>

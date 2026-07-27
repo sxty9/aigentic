@@ -8,6 +8,7 @@ import {
   Stack,
   Text,
   useLiveQuery,
+  useT,
   type ServiceContextProps,
 } from '@holistic/ui';
 import type { SecretStatus, TokenStatus } from './types';
@@ -30,20 +31,21 @@ function ApiKeySlot({ api, ui }: Pick<ServiceContextProps, 'api' | 'ui'>) {
   const status = useLiveQuery<SecretStatus>(() => api.get<SecretStatus>('mykey'), 30000);
   const [key, setKey] = useState('');
   const [busy, setBusy] = useState(false);
+  const t = useT();
   const cur = status.data;
   const ownKey = cur?.source === 'user';
 
   async function save() {
-    const t = key.trim();
-    if (!t) return;
+    const trimmed = key.trim();
+    if (!trimmed) return;
     setBusy(true);
     try {
-      await api.post<SecretStatus>('mykey', { key: t });
+      await api.post<SecretStatus>('mykey', { key: trimmed });
       setKey('');
-      ui.toast({ title: 'Your API key was saved', variant: 'success' });
+      ui.toast({ title: t('aigentic.mykey.saved'), variant: 'success' });
       status.refresh();
     } catch (e) {
-      ui.toast({ title: 'Could not save key', description: (e as Error).message, variant: 'error' });
+      ui.toast({ title: t('aigentic.key.saveError'), description: (e as Error).message, variant: 'error' });
     } finally {
       setBusy(false);
     }
@@ -52,22 +54,22 @@ function ApiKeySlot({ api, ui }: Pick<ServiceContextProps, 'api' | 'ui'>) {
     setBusy(true);
     try {
       await api.post<SecretStatus>('mykey', { clear: true });
-      ui.toast({ title: 'Your API key was removed', variant: 'success' });
+      ui.toast({ title: t('aigentic.mykey.removed'), variant: 'success' });
       status.refresh();
     } catch (e) {
-      ui.toast({ title: 'Could not remove key', description: (e as Error).message, variant: 'error' });
+      ui.toast({ title: t('aigentic.key.removeError'), description: (e as Error).message, variant: 'error' });
     } finally {
       setBusy(false);
     }
   }
 
   return (
-    <Panel title="Your Anthropic API key" className="p-4">
+    <Panel title={t('aigentic.mykey.title')} className="p-4">
       <Stack gap={3}>
         <Stack direction="row" align="center" gap={2}>
           {cur?.configured ? (
             <>
-              <Badge variant={ownKey ? 'accent' : 'neutral'}>{ownKey ? 'your key' : 'using shared key'}</Badge>
+              <Badge variant={ownKey ? 'accent' : 'neutral'}>{ownKey ? t('aigentic.mykey.own') : t('aigentic.mykey.shared')}</Badge>
               {cur.hint && (
                 <Text variant="footnote" color="secondary">
                   {cur.hint}
@@ -75,21 +77,18 @@ function ApiKeySlot({ api, ui }: Pick<ServiceContextProps, 'api' | 'ui'>) {
               )}
             </>
           ) : (
-            <Badge variant="neutral">not configured</Badge>
+            <Badge variant="neutral">{t('aigentic.key.notConfigured')}</Badge>
           )}
         </Stack>
-        <Text color="secondary">
-          Bills the paid claude-api engine to your own Anthropic Console account. Create one at
-          console.anthropic.com → API Keys. Stored server-side, never shown again.
-        </Text>
-        <PasswordInput value={key} onChange={(e) => setKey(e.target.value)} placeholder="sk-ant-…" />
+        <Text color="secondary">{t('aigentic.mykey.intro')}</Text>
+        <PasswordInput value={key} onChange={(e) => setKey(e.target.value)} placeholder={t('aigentic.key.placeholder')} />
         <Stack direction="row" gap={2}>
           <Button variant="primary" loading={busy} disabled={!key.trim()} onClick={save}>
-            {ownKey ? 'Replace key' : 'Save key'}
+            {ownKey ? t('aigentic.key.replace') : t('aigentic.key.save')}
           </Button>
           {ownKey && (
             <Button variant="secondary" loading={busy} onClick={clear}>
-              Remove
+              {t('aigentic.remove')}
             </Button>
           )}
         </Stack>
@@ -102,19 +101,20 @@ function ClaudeSlot({ api, ui }: Pick<ServiceContextProps, 'api' | 'ui'>) {
   const status = useLiveQuery<TokenStatus>(() => api.get<TokenStatus>('claude'), 30000);
   const [token, setToken] = useState('');
   const [busy, setBusy] = useState(false);
+  const t = useT();
   const cur = status.data;
 
   async function link() {
-    const t = token.trim();
-    if (!t) return;
+    const trimmed = token.trim();
+    if (!trimmed) return;
     setBusy(true);
     try {
-      await api.post<TokenStatus>('claude/link', { token: t });
+      await api.post<TokenStatus>('claude/link', { token: trimmed });
       setToken('');
-      ui.toast({ title: 'Claude subscription linked', variant: 'success' });
+      ui.toast({ title: t('aigentic.claude.linkedToast'), variant: 'success' });
       status.refresh();
     } catch (e) {
-      ui.toast({ title: 'Could not link Claude', description: (e as Error).message, variant: 'error' });
+      ui.toast({ title: t('aigentic.claude.linkError'), description: (e as Error).message, variant: 'error' });
     } finally {
       setBusy(false);
     }
@@ -123,22 +123,22 @@ function ClaudeSlot({ api, ui }: Pick<ServiceContextProps, 'api' | 'ui'>) {
     setBusy(true);
     try {
       await api.post<TokenStatus>('claude/unlink', {});
-      ui.toast({ title: 'Claude subscription unlinked', variant: 'success' });
+      ui.toast({ title: t('aigentic.claude.unlinkedToast'), variant: 'success' });
       status.refresh();
     } catch (e) {
-      ui.toast({ title: 'Could not unlink', description: (e as Error).message, variant: 'error' });
+      ui.toast({ title: t('aigentic.claude.unlinkError'), description: (e as Error).message, variant: 'error' });
     } finally {
       setBusy(false);
     }
   }
 
   return (
-    <Panel title="Your Claude subscription" className="p-4">
+    <Panel title={t('aigentic.claude.title')} className="p-4">
       <Stack gap={3}>
         <Stack direction="row" align="center" gap={2}>
           {cur?.linked ? (
             <>
-              <Badge variant="accent">linked</Badge>
+              <Badge variant="accent">{t('aigentic.claude.linked')}</Badge>
               {cur.hint && (
                 <Text variant="footnote" color="secondary">
                   {cur.hint}
@@ -146,25 +146,19 @@ function ClaudeSlot({ api, ui }: Pick<ServiceContextProps, 'api' | 'ui'>) {
               )}
             </>
           ) : (
-            <Badge variant="neutral">not linked</Badge>
+            <Badge variant="neutral">{t('aigentic.claude.notLinked')}</Badge>
           )}
         </Stack>
-        <Text color="secondary">
-          Uses your Claude Pro/Max subscription for the claude-cli engine — no API cost. One-time
-          setup: on a computer where the <Text as="span" className="font-mono">claude</Text> CLI is
-          installed and you can sign into your Claude account (your laptop/desktop — not this
-          server), run the command below, sign in, then paste the <Text as="span" className="font-mono">sk-ant-oat…</Text>{' '}
-          token it prints (valid about a year).
-        </Text>
+        <Text color="secondary">{t('aigentic.claude.intro')}</Text>
         <CodeBlock code="claude setup-token" />
-        <PasswordInput value={token} onChange={(e) => setToken(e.target.value)} placeholder="sk-ant-oat…" />
+        <PasswordInput value={token} onChange={(e) => setToken(e.target.value)} placeholder={t('aigentic.claude.tokenPlaceholder')} />
         <Stack direction="row" gap={2}>
           <Button variant="primary" loading={busy} disabled={!token.trim()} onClick={link}>
-            {cur?.linked ? 'Replace token' : 'Link Claude'}
+            {cur?.linked ? t('aigentic.claude.replaceToken') : t('aigentic.claude.link')}
           </Button>
           {cur?.linked && (
             <Button variant="secondary" loading={busy} onClick={unlink}>
-              Unlink
+              {t('aigentic.claude.unlink')}
             </Button>
           )}
         </Stack>

@@ -8,44 +8,21 @@ import {
   SegmentedControl,
   Spinner,
   Stack,
+  useT,
   type BreadcrumbSegment,
   type FileEntry,
   type ServiceApiClient,
 } from '@holistic/ui';
-import { bytesToBase64, type InlinePart } from './aiFiles';
+import { encodePath, readEntryInline, type InlinePart } from './aiFiles';
 
 // A picker over the user's Holistic Files (Samba) share, mounted in the chat so files can be attached
 // from the server-side share — the counterpart to dragging in local OS files. It reuses the SAME fs
-// endpoints as the Files app (fs/roots, fs/list, fs/text, fs/raw) and the SAME SDK browser, so there
-// is no parallel data path: the daemon stays fs-free, the privileged Samba client hands over the bytes.
-const q = (p: string) => encodeURIComponent(p);
+// endpoints as the Files app (fs/roots, fs/list) and the SAME shared reader (readEntryInline over
+// fs/text + fs/raw) and SDK browser, so there is no parallel data path: the daemon stays fs-free, the
+// privileged Samba client hands over the bytes.
 const MAX_FILES = 25;
 
 type FileRoot = { key: string; label?: string; writable?: boolean };
-
-// readInline pulls one Samba file's bytes into an inline part, mirroring the Files "Ask AI" rules:
-// text rides in `content`; png/jpeg/gif/webp images and PDFs ride as base64; anything else is listed
-// by name only (counted, not read).
-async function readInline(api: ServiceApiClient, e: FileEntry): Promise<InlinePart | null> {
-  try {
-    if (e.viewer === 'text' || e.viewer === 'markdown') {
-      const p = await api.get<{ content?: string }>(`fs/text?path=${q(e.path)}`);
-      return { path: e.path, content: p?.content ?? '', mediaType: '' };
-    }
-    const mime = e.mime ?? '';
-    if (e.viewer === 'pdf' || mime === 'application/pdf') {
-      const res = await api.raw(`fs/raw?path=${q(e.path)}`);
-      return { path: e.path, content: bytesToBase64(new Uint8Array(await res.arrayBuffer())), mediaType: 'application/pdf' };
-    }
-    if (e.viewer === 'image' && /^image\/(png|jpeg|gif|webp)$/.test(mime)) {
-      const res = await api.raw(`fs/raw?path=${q(e.path)}`);
-      return { path: e.path, content: bytesToBase64(new Uint8Array(await res.arrayBuffer())), mediaType: mime };
-    }
-    return { path: e.path, content: '', mediaType: mime || 'application/octet-stream' };
-  } catch {
-    return null;
-  }
-}
 
 // segsFor turns a virtual path ("me/Docs/spec.md") into breadcrumb hops.
 function segsFor(path: string): BreadcrumbSegment[] {
@@ -57,6 +34,7 @@ function segsFor(path: string): BreadcrumbSegment[] {
 }
 
 export function FilesPicker({ api, onClose, onPick }: { api: ServiceApiClient; onClose: () => void; onPick: (parts: InlinePart[]) => void }) {
+  const t = useT();
   const [roots, setRoots] = useState<FileRoot[]>([]);
   const [cwd, setCwd] = useState('');
   const [entries, setEntries] = useState<FileEntry[]>([]);
@@ -89,7 +67,7 @@ export function FilesPicker({ api, onClose, onPick }: { api: ServiceApiClient; o
     setError(null);
     setSelection(new Set());
     api
-      .get<{ entries: FileEntry[] }>(`fs/list?path=${q(cwd)}`)
+      .get<{ entries: FileEntry[] }>(`fs/list?path=${encodePath(cwd)}`)
       .then((r) => alive && setEntries(r.entries ?? []))
       .catch((e) => alive && setError((e as Error).message))
       .finally(() => alive && setLoading(false));
@@ -119,7 +97,7 @@ export function FilesPicker({ api, onClose, onPick }: { api: ServiceApiClient; o
     if (files.length === 0) return;
     setBusy(true);
     try {
-      const parts = (await Promise.all(files.map((e) => readInline(api, e)))).filter(Boolean) as InlinePart[];
+      const parts = (await Promise.all(files.map((e) => readEntryInline(api, e)))).filter(Boolean) as InlinePart[];
       onPick(parts);
       onClose();
     } finally {
@@ -133,15 +111,15 @@ export function FilesPicker({ api, onClose, onPick }: { api: ServiceApiClient; o
     <Modal
       open
       onOpenChange={(o) => !o && onClose()}
-      title="Aus Files anhängen"
+      title={t('aigentic.filesPicker.title')}
       size="lg"
       footer={
         <>
           <Button variant="ghost" onClick={onClose}>
-            Abbrechen
+            {t('common.cancel')}
           </Button>
           <Button variant="primary" onClick={attach} disabled={count === 0 || busy} loading={busy}>
-            {count > 0 ? `Anhängen (${count})` : 'Anhängen'}
+            {count > 0 ? t('aigentic.attachCount', { count }) : t('aigentic.attach')}
           </Button>
         </>
       }

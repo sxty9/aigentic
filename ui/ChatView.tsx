@@ -13,6 +13,7 @@ import {
   Textarea,
   UploadControl,
   formatBytes,
+  useT,
   type ServiceApiClient,
   type ServiceContextProps,
 } from '@holistic/ui';
@@ -93,6 +94,7 @@ export function ChatView({
   const [pickerOpen, setPickerOpen] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const prevLen = useRef(messages.length);
+  const t = useT();
 
   // Live local-model residency (from ollama's /api/ps): staged progress + a keep-alive readout.
   const live = useOllama(api, { engine: picker.engine, model: picker.model, busy });
@@ -136,7 +138,7 @@ export function ChatView({
     if (!parts.length) return;
     const { next, dropped } = mergeAttach(attached, parts);
     setAttached(next);
-    if (dropped > 0) ui.toast({ title: `${dropped} Datei(en) nicht angehängt`, description: 'Zu viele oder zu groß (max. 25 Dateien, 24 MB).', variant: 'error' });
+    if (dropped > 0) ui.toast({ title: t('aigentic.chat.dropTitle', { count: dropped }), description: t('aigentic.chat.dropHint'), variant: 'error' });
   }
 
   function onDrop(e: DragEvent<HTMLDivElement>) {
@@ -167,7 +169,7 @@ export function ChatView({
       onMessages([...next, { role: 'assistant', content: cleanAnswer(out.output), engine: out.engine, model: out.model, ask: out.ask }]);
       setAttached([]);
     } catch (e) {
-      ui.toast({ title: 'Chat failed', description: (e as Error).message, variant: 'error' });
+      ui.toast({ title: t('aigentic.chat.failed'), description: (e as Error).message, variant: 'error' });
     } finally {
       setBusy(false);
     }
@@ -195,7 +197,7 @@ export function ChatView({
     >
       <ScrollArea id={SCROLL_ID} onScroll={saveScroll} className="grow max-h-[55vh] min-h-[28vh] pr-1">
         {messages.length === 0 ? (
-          <EmptyState title="Ask anything" description="Pick an engine below — Auto chooses for you — then start chatting." />
+          <EmptyState title={t('aigentic.chat.emptyTitle')} description={t('aigentic.chat.emptyDesc')} />
         ) : (
           <Stack gap={4}>
             {messages.map((m, i) =>
@@ -225,7 +227,7 @@ export function ChatView({
           <Stack direction="row" align="center" gap={2} className="mt-3">
             <Spinner className="h-4 w-4" />
             <Text variant="footnote" color="secondary">
-              {live.stage ?? 'Denkt nach …'}
+              {live.stage ? t(`aigentic.chat.stage.${live.stage}`) : t('aigentic.chat.stage.thinking')}
             </Text>
           </Stack>
         )}
@@ -236,13 +238,18 @@ export function ChatView({
 
         {picker.engine === 'ollama' && live.residency && (
           <Stack direction="row" align="center" gap={2} className="flex-wrap">
-            <Badge variant={live.residency.hot ? 'accent' : 'neutral'}>{live.residency.hot ? 'warm' : 'kalt'}</Badge>
+            <Badge variant={live.residency.hot ? 'accent' : 'neutral'}>
+              {live.residency.hot ? t('aigentic.chat.warm') : t('aigentic.chat.cold')}
+            </Badge>
             <Text variant="caption" color="tertiary">
               {live.residency.hot && live.residency.loaded
-                ? `${live.residency.name} · ${formatBytes(live.residency.loaded.vramBytes)} VRAM · entlädt in ${mmss(
-                    live.residency.secondsRemaining,
-                  )} · ctx ${live.residency.loaded.contextLength}${live.residency.loaded.fullyOnGpu ? '' : ' · teils CPU'}`
-                : `${live.residency.name} · lädt beim nächsten Senden von der SSD`}
+                ? t('aigentic.chat.residencyWarm', {
+                    name: live.residency.name,
+                    vram: formatBytes(live.residency.loaded.vramBytes),
+                    time: mmss(live.residency.secondsRemaining),
+                    ctx: live.residency.loaded.contextLength,
+                  }) + (live.residency.loaded.fullyOnGpu ? '' : t('aigentic.chat.partlyCpu'))
+                : t('aigentic.chat.residencyCold', { name: live.residency.name })}
             </Text>
           </Stack>
         )}
@@ -254,7 +261,7 @@ export function ChatView({
                 <Text variant="caption" truncate className="max-w-[12rem]">
                   {baseName(p.path)}
                 </Text>
-                <Button variant="ghost" size="sm" aria-label="Entfernen" onClick={() => setAttached((a) => a.filter((_, j) => j !== i))}>
+                <Button variant="ghost" size="sm" aria-label={t('aigentic.remove')} onClick={() => setAttached((a) => a.filter((_, j) => j !== i))}>
                   ×
                 </Button>
               </Stack>
@@ -263,9 +270,9 @@ export function ChatView({
         )}
 
         <Stack direction="row" gap={2} align="center" className="flex-wrap">
-          <UploadControl onFiles={(f) => void addFiles(f)} label="Anhängen" />
+          <UploadControl onFiles={(f) => void addFiles(f)} label={t('aigentic.attach')} />
           <Button variant="secondary" size="sm" iconLeft={<FilesIcon className="h-4 w-4" />} onClick={() => setPickerOpen(true)}>
-            Aus Files
+            {t('aigentic.chat.fromFiles')}
           </Button>
         </Stack>
 
@@ -277,11 +284,11 @@ export function ChatView({
               onKeyDown={onKey}
               rows={2}
               className="w-full"
-              placeholder="Message the AI…  (Enter to send, Shift+Enter for a new line — Dateien reinziehen oder anhängen)"
+              placeholder={t('aigentic.chat.inputPlaceholder')}
             />
           </Stack>
           <Button variant="primary" loading={busy} disabled={!input.trim()} onClick={() => void send()}>
-            Send
+            {t('aigentic.chat.send')}
           </Button>
         </Stack>
       </Stack>

@@ -9,10 +9,13 @@ function matches(resident: string, want: string): boolean {
   return resident === want || resident.split(':')[0] === want.split(':')[0];
 }
 
+// Staged-progress token while a reply is pending — honest, derived from /api/ps (is the model
+// already resident, or does the SSD have to load it first?). Semantic, not a display string: the
+// view maps it to a localized label, so this pure-logic hook stays language-free.
+export type OllamaStage = 'thinking' | 'choosing' | 'generating' | 'loading';
+
 export interface OllamaLive {
-  // Staged-progress label while a reply is pending — honest, derived from /api/ps (is the model
-  // already resident, or does the SSD have to load it first?). null when idle.
-  stage: string | null;
+  stage: OllamaStage | null; // null when idle
   // Live residency readout for the local model (ollama engine only): warm/cold, VRAM, keep-alive
   // seconds remaining, loaded context window. null when no local model is in play.
   residency: { name: string; hot: boolean; loaded: LoadedModel | null; secondsRemaining: number } | null;
@@ -59,11 +62,11 @@ export function useOllama(api: ServiceApiClient, opts: { engine: string; model: 
     return () => clearInterval(id);
   }, [relevant]);
 
-  let stage: string | null = null;
+  let stage: OllamaStage | null = null;
   if (busy) {
-    if (engine === 'claude-cli' || engine === 'claude-api') stage = 'Denkt nach …';
-    else if (engine === 'choose') stage = 'Wählt Engine & Modell …';
-    else stage = snap?.models.some((m) => matches(m.name, model)) ? 'Generiert Antwort …' : 'Lädt Modell in den VRAM … (von SSD)';
+    if (engine === 'claude-cli' || engine === 'claude-api') stage = 'thinking';
+    else if (engine === 'choose') stage = 'choosing';
+    else stage = snap?.models.some((m) => matches(m.name, model)) ? 'generating' : 'loading';
   }
 
   let residency: OllamaLive['residency'] = null;

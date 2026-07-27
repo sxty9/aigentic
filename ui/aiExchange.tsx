@@ -7,6 +7,7 @@ import {
   Stack,
   Text,
   Textarea,
+  useT,
   type FileEntry,
   type FileViewerActionContext,
   type FolderActionContext,
@@ -15,7 +16,7 @@ import {
   type TextPayload,
 } from '@holistic/ui';
 import { EnginePicker, pickerFields, usePicker } from './EnginePicker';
-import { bytesToBase64, cleanAnswer, type InlinePart } from './aiFiles';
+import { bytesToBase64, classifyEntry, cleanAnswer, encodePath, readEntryInline, type InlinePart } from './aiFiles';
 import { CHAT_SEED_KEY, type AigenticRequest, type ChatSeed, type Result, type RunResponse } from './types';
 
 // The shared aigentic "Ask AI" surface. EVERY AI turn in this service — the folder panel, the
@@ -53,7 +54,8 @@ export function EngineTag({ engine, model, size = 'footnote' }: { engine?: strin
 
 // AnswerBody renders a cleaned reply as Markdown, or the shared empty-state placeholder.
 export function AnswerBody({ text }: { text: string }) {
-  return text ? <Markdown text={text} /> : <Text color="secondary">(empty response)</Text>;
+  const t = useT();
+  return text ? <Markdown text={text} /> : <Text color="secondary">{t('aigentic.emptyResponse')}</Text>;
 }
 
 // ── the one Ask-AI panel body ───────────────────────────────────────────────────────────────
@@ -80,6 +82,7 @@ function AskAiExchange({ apiFor, ui, openService, close, scopeNote, defaultPromp
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState('');
   const [result, setResult] = useState<Result | null>(null);
+  const t = useT();
   const answer = result ? cleanAnswer(result.output) : '';
 
   async function run() {
@@ -92,7 +95,7 @@ function AskAiExchange({ apiFor, ui, openService, close, scopeNote, defaultPromp
       const data: AigenticRequest = { prompt, inline: parts, ...pickerFields(picker) };
       setResult(await runAigentic(apiFor('aigentic'), picker.engine, data));
     } catch (e) {
-      ui.toast({ title: 'AI request failed', description: (e as Error).message, variant: 'error' });
+      ui.toast({ title: t('aigentic.runError'), description: (e as Error).message, variant: 'error' });
     } finally {
       setBusy(false);
       setNote('');
@@ -124,10 +127,10 @@ function AskAiExchange({ apiFor, ui, openService, close, scopeNote, defaultPromp
 
       <Stack direction="row" gap={2} align="center">
         <Button variant="primary" loading={busy} onClick={run}>
-          Ask AI
+          {t('aigentic.askAi')}
         </Button>
         <Button variant="secondary" onClick={close}>
-          Close
+          {t('common.close')}
         </Button>
         {note && (
           <Text variant="footnote" color="secondary">
@@ -140,9 +143,9 @@ function AskAiExchange({ apiFor, ui, openService, close, scopeNote, defaultPromp
         <Stack gap={2}>
           <Stack direction="row" align="center" gap={2} className="flex-wrap">
             <EngineTag engine={result.engine} model={result.model} />
-            {result.usage?.truncated && <Badge variant="neutral">context truncated</Badge>}
+            {result.usage?.truncated && <Badge variant="neutral">{t('aigentic.contextTruncated')}</Badge>}
             <Button variant="secondary" size="sm" onClick={continueInChat}>
-              Continue in chat →
+              {t('aigentic.continueInChat')}
             </Button>
           </Stack>
           <Panel className="p-4 bg-fill/5">
@@ -160,14 +163,6 @@ function AskAiExchange({ apiFor, ui, openService, close, scopeNote, defaultPromp
 const MAX_FILES = 50;
 const MAX_TOTAL_BYTES = 25 * 1024 * 1024;
 
-const q = (p: string) => encodeURIComponent(p);
-
-// fetchBase64 reads raw bytes via the Files app's own client and base64-encodes them.
-async function fetchBase64(api: ServiceApiClient, path: string): Promise<string> {
-  const res = await api.raw(`fs/raw?path=${q(path)}`);
-  return bytesToBase64(new Uint8Array(await res.arrayBuffer()));
-}
-
 // expand flattens a list of entries, recursing into folders, capped at MAX_FILES.
 async function expand(entries: FileEntry[], api: ServiceApiClient, depth = 0): Promise<FileEntry[]> {
   const out: FileEntry[] = [];
@@ -176,7 +171,7 @@ async function expand(entries: FileEntry[], api: ServiceApiClient, depth = 0): P
     if (e.kind === 'dir') {
       if (depth >= 6) continue;
       try {
-        const sub = await api.get<{ entries: FileEntry[] }>(`fs/list?path=${q(e.path)}`);
+        const sub = await api.get<{ entries: FileEntry[] }>(`fs/list?path=${encodePath(e.path)}`);
         out.push(...(await expand(sub.entries, api, depth + 1)));
       } catch {
         // unreadable folder — skip
@@ -188,37 +183,18 @@ async function expand(entries: FileEntry[], api: ServiceApiClient, depth = 0): P
   return out.slice(0, MAX_FILES);
 }
 
-// toInline turns a file into an inline part: text → content; image/PDF → base64 + mediaType;
-// anything else → a name-only entry so the AI still "counts" it.
-async function toInline(api: ServiceApiClient, e: FileEntry): Promise<InlinePart | null> {
-  try {
-    if (e.viewer === 'text' || e.viewer === 'markdown') {
-      const p = await api.get<TextPayload>(`fs/text?path=${q(e.path)}`);
-      return p?.content ? { path: e.path, content: p.content, mediaType: '' } : null;
-    }
-    if (e.viewer === 'image' && e.mime && /^image\/(png|jpeg|gif|webp)$/.test(e.mime)) {
-      return { path: e.path, content: await fetchBase64(api, e.path), mediaType: e.mime };
-    }
-    if (e.viewer === 'pdf' || e.mime === 'application/pdf') {
-      return { path: e.path, content: await fetchBase64(api, e.path), mediaType: 'application/pdf' };
-    }
-    // Other types: counted only (named in the prompt by the backend), not read.
-    return { path: e.path, content: '', mediaType: e.mime || 'application/octet-stream' };
-  } catch {
-    return null;
-  }
-}
-
 // AskAiFolderPanel asks about a folder / multi-file selection: it traverses the share (recursing
-// folders, size-capped) and hands the gathered parts to the shared exchange.
+// folders, size-capped) and hands the gathered parts to the shared exchange. Each entry is read
+// through the shared readEntryInline (the ONE Holistic-fs reader).
 export function AskAiFolderPanel({ cwd, entries, selection, api, apiFor, ui, openService, close }: FolderActionContext) {
+  const t = useT();
   const scope = selection.length > 0 ? selection : entries;
 
   const gather: Gather = async (setNote) => {
-    setNote('Gathering files…');
+    setNote(t('aigentic.note.gathering'));
     const files = await expand(scope, api);
     if (files.length === 0) {
-      ui.toast({ title: 'No files in this folder', variant: 'error' });
+      ui.toast({ title: t('aigentic.note.noFiles'), variant: 'error' });
       return null;
     }
     const parts: InlinePart[] = [];
@@ -226,17 +202,17 @@ export function AskAiFolderPanel({ cwd, entries, selection, api, apiFor, ui, ope
     let read = 0;
     for (const e of files) {
       if (total >= MAX_TOTAL_BYTES) break;
-      const part = await toInline(api, e);
+      const part = await readEntryInline(api, e);
       if (!part) continue;
       parts.push(part);
       total += part.content.length;
       if (part.content) read += 1;
     }
     if (parts.length === 0) {
-      ui.toast({ title: 'Could not read any file', variant: 'error' });
+      ui.toast({ title: t('aigentic.note.noneRead'), variant: 'error' });
       return null;
     }
-    setNote(`Sending ${read} file${read === 1 ? '' : 's'} (${parts.length} total) to the AI…`);
+    setNote(t('aigentic.note.sending', { read, total: parts.length }));
     return parts;
   };
 
@@ -247,13 +223,12 @@ export function AskAiFolderPanel({ cwd, entries, selection, api, apiFor, ui, ope
       openService={openService}
       close={close}
       scopeNote={
-        <>
-          Folder “{cwd}” — {selection.length > 0 ? `${selection.length} selected item(s)` : 'all items'} (folders are
-          included recursively; images &amp; PDFs are read by Claude models, other files are listed).
-        </>
+        selection.length > 0
+          ? t('aigentic.scope.folderSelected', { cwd, count: selection.length })
+          : t('aigentic.scope.folderAll', { cwd })
       }
-      defaultPrompt="Summarize these files."
-      placeholder="Ask the AI about these files…"
+      defaultPrompt={t('aigentic.prompt.folder')}
+      placeholder={t('aigentic.placeholder.folder')}
       handoffLabel={cwd}
       gather={gather}
     />
@@ -262,17 +237,16 @@ export function AskAiFolderPanel({ cwd, entries, selection, api, apiFor, ui, ope
 
 // ── entry point 2: single file (shared FilePreview) ─────────────────────────────────────────
 // buildFilePart turns the shown file into one inline part from host-provided content — text
-// inline, PDFs/web images as base64. Returns null when the file can't be read.
+// inline, PDFs/web images as base64. It shares the SAME text/image/pdf rule as everywhere else
+// (classifyEntry); only the byte source differs (the host already loaded the preview, so there is
+// no fs read here). Returns null when the file can't be read.
 async function buildFilePart(entry: FileEntry, text: TextPayload | null | undefined, loadBytes?: () => Promise<Uint8Array>): Promise<InlinePart | null> {
-  if (entry.viewer === 'text' || entry.viewer === 'markdown') {
+  const { kind, mediaType } = classifyEntry(entry);
+  if (kind === 'text') {
     return text?.content ? { path: entry.name, content: text.content, mediaType: '' } : null;
   }
-  const mime = entry.mime ?? '';
-  const isPdf = entry.viewer === 'pdf' || mime === 'application/pdf';
-  const isWebImage = entry.viewer === 'image' && /^image\/(png|jpeg|gif|webp)$/.test(mime);
-  if ((isPdf || isWebImage) && loadBytes) {
-    const bytes = await loadBytes();
-    return { path: entry.name, content: bytesToBase64(bytes), mediaType: isPdf ? 'application/pdf' : mime };
+  if ((kind === 'image' || kind === 'pdf') && loadBytes) {
+    return { path: entry.name, content: bytesToBase64(await loadBytes()), mediaType };
   }
   return null;
 }
@@ -281,14 +255,15 @@ async function buildFilePart(entry: FileEntry, text: TextPayload | null | undefi
 // attachments). It does NO fileshare traversal: the host already loaded the file to preview it, so
 // text arrives in `text` and binary bytes come from the host's `loadBytes`.
 export function AskAiFilePanel({ entry, text, loadBytes, apiFor, ui, openService, close }: FileViewerActionContext) {
+  const t = useT();
   const gather: Gather = async (setNote) => {
-    setNote('Reading file…');
+    setNote(t('aigentic.note.reading'));
     const part = await buildFilePart(entry, text, loadBytes);
     if (!part) {
-      ui.toast({ title: 'This file can’t be read by the AI', variant: 'error' });
+      ui.toast({ title: t('aigentic.note.fileUnreadable'), variant: 'error' });
       return null;
     }
-    setNote('Asking the AI…');
+    setNote(t('aigentic.note.asking'));
     return [part];
   };
 
@@ -298,9 +273,9 @@ export function AskAiFilePanel({ entry, text, loadBytes, apiFor, ui, openService
       ui={ui}
       openService={openService}
       close={close}
-      scopeNote={<>“{entry.name}” — text is read inline; images &amp; PDFs are read by Claude models.</>}
-      defaultPrompt="Summarize this file."
-      placeholder="Ask the AI about this file…"
+      scopeNote={t('aigentic.scope.file', { name: entry.name })}
+      defaultPrompt={t('aigentic.prompt.file')}
+      placeholder={t('aigentic.placeholder.file')}
       handoffLabel={entry.name}
       gather={gather}
     />
