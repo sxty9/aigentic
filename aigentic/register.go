@@ -1,6 +1,7 @@
 package aigentic
 
 import (
+	"context"
 	"os"
 
 	"github.com/sxty9/prizm/graveyard"
@@ -16,6 +17,12 @@ type Config struct {
 	ClaudeCLI       ClaudeCLIConfig
 	ClaudeAPI       ClaudeAPIConfig
 	Choose          ChooseConfig
+	// OnUsage, when set, receives the token accounting of every LEAF run (ollama / claude-cli /
+	// claude-api), including the leaf a choose call resolves to — the choose router itself is not
+	// metered, so a routed run counts once. It is the consumption interface's ingestion point (the
+	// daemon wires it to the usage reporter). nil => no metering. It runs on the request path, so
+	// the sink must be cheap and non-blocking.
+	OnUsage func(engine prizm.Kind, u Usage)
 }
 
 // limits derives the server-authoritative guards from Config (with env/default fallback).
@@ -53,9 +60,38 @@ func Register(reg *prizm.Registry, grave graveyard.Graveyard, cfg Config) error 
 		{KindClaudeAPI, NewClaudeAPI(cfg.ClaudeAPI, lim)},
 	}
 	for _, l := range leaves {
-		if err := reg.Register(l.kind, prizm.NewPrizm(l.proc, grave)); err != nil {
+		proc := l.proc
+		if cfg.OnUsage != nil {
+			// Meter the leaf, not the router: a choose call spawns its picked leaf THROUGH the
+			// registry, so the leaf's metered run is the one that counts (choose forwards the same
+			// Usage, but is left unmetered to avoid double-counting).
+			proc = meterProcessor{inner: proc, kind: l.kind, sink: cfg.OnUsage}
+		}
+		if err := reg.Register(l.kind, prizm.NewPrizm(proc, grave)); err != nil {
 			return err
 		}
 	}
 	return reg.Register(KindChoose, prizm.NewPrizm(NewChoose(cfg.Choose), grave, prizm.WithSpawner(reg)))
+}
+
+// meterProcessor wraps a leaf processor to report its token Usage to a sink after each successful
+// run. It decodes the response in the P layer — package aigentic owns Result — so the HTTP shell
+// keeps its OSI-switch property and never decodes Data itself.
+type meterProcessor struct {
+	inner prizm.Processor
+	kind  prizm.Kind
+	sink  func(prizm.Kind, Usage)
+}
+
+func (m meterProcessor) Process(ctx context.Context, req prizm.Request, env prizm.Env) (prizm.Response, error) {
+	resp, err := m.inner.Process(ctx, req, env)
+	if err != nil {
+		return resp, err
+	}
+	if res, derr := prizm.DecodeData[Result](resp.Data); derr == nil {
+		if res.Usage.InputTokens > 0 || res.Usage.OutputTokens > 0 {
+			m.sink(m.kind, res.Usage)
+		}
+	}
+	return resp, err
 }

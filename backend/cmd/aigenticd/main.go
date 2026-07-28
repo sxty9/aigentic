@@ -29,6 +29,7 @@ import (
 	"github.com/sxty9/aigentic/backend/internal/grave"
 	"github.com/sxty9/aigentic/backend/internal/hconfig"
 	secretstore "github.com/sxty9/aigentic/backend/internal/secret"
+	"github.com/sxty9/aigentic/backend/internal/usage"
 	"github.com/sxty9/prizm/prizm"
 )
 
@@ -68,8 +69,20 @@ func main() {
 		return 12288
 	}
 
+	// Consumption reporting (holistic Consumption axiom): accumulate every leaf run's token usage
+	// and periodically write the full snapshot (tokens + CPU + memory + storage) into the passive
+	// pool the dashboard aggregates. Best-effort — the reporter swallows an unwritable pool, so a
+	// host that never provisioned it runs unchanged.
+	rep := usage.New("aigentic", "", "", stateDir())
+	repCtx, repCancel := context.WithCancel(context.Background())
+	defer repCancel()
+	go rep.Run(repCtx, 0)
+
+	cfg := configFromEnv(sec, ctxCap)
+	cfg.OnUsage = func(_ prizm.Kind, u aigentic.Usage) { rep.AddTokens(u.InputTokens, u.OutputTokens) }
+
 	reg := prizm.NewRegistry(*maxDepth)
-	if err := aigentic.Register(reg, g, configFromEnv(sec, ctxCap)); err != nil {
+	if err := aigentic.Register(reg, g, cfg); err != nil {
 		log.Fatalf("aigenticd: %v", err)
 	}
 
@@ -100,6 +113,10 @@ func main() {
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
 	<-stop
+
+	// Stop the reporter's ticker and flush the final counts synchronously before exit.
+	repCancel()
+	rep.Flush()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -275,6 +292,22 @@ func secretPath() string {
 		return filepath.Join(d, "anthropic.key")
 	}
 	return "/var/lib/aigentic/anthropic.key"
+}
+
+// stateDir is the service's writable runtime state root (the systemd StateDirectory). It is the
+// tree measured for the storage report and where the cumulative token counters persist. Override
+// with AIGENTIC_STATE_DIR.
+func stateDir() string {
+	if p := os.Getenv("AIGENTIC_STATE_DIR"); p != "" {
+		return p
+	}
+	if d := os.Getenv("STATE_DIRECTORY"); d != "" {
+		if i := strings.IndexByte(d, ':'); i >= 0 {
+			d = d[:i]
+		}
+		return d
+	}
+	return "/var/lib/aigentic"
 }
 
 // usersDir is the per-user credential root (api.key + claude-oauth.token + claude/ per user).

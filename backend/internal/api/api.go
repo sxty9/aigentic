@@ -100,6 +100,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST "+base+"grave/put", s.guard(rights.GroupRun, true, s.gravePut))
 	mux.HandleFunc("POST "+base+"grave/move", s.guard(rights.GroupRun, true, s.graveMove))
 	mux.HandleFunc("DELETE "+base+"grave", s.guard(rights.GroupRun, true, s.graveDelete))
+	// The MCP surface (MCP axiom): aigentic's capability — running an AI request — offered as
+	// Model-Context-Protocol tools at the fixed, server-side path base+"mcp". It speaks JSON-RPC and
+	// authenticates the holistic session inside the handler (authenticateMCP), so it is mounted raw,
+	// not behind guard; every tool re-checks the same rights the REST door enforces.
+	mux.Handle(base+"mcp", s.mcpRegistry().Handler(s.authenticateMCP))
 	mux.HandleFunc("GET "+base+"health", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 	})

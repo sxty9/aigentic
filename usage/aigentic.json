@@ -1,0 +1,11 @@
+{
+  "service": "aigentic",
+  "version": 1,
+  "metrics": [
+    { "id": "inputTokens", "label": "AI input tokens", "kind": "tokens" },
+    { "id": "outputTokens", "label": "AI output tokens", "kind": "tokens" },
+    { "id": "cpuSeconds", "label": "CPU time", "kind": "compute" },
+    { "id": "residentBytes", "label": "Resident memory", "kind": "memory" },
+    { "id": "storageBytes", "label": "Stored data", "kind": "storage" }
+  ]
+}
