@@ -235,6 +235,10 @@ func (s *Server) dispatch(w http.ResponseWriter, r *http.Request, u *auth.User, 
 		// Surface the specific reason (e.g. Anthropic's "model not found" / effort unsupported)
 		// so a bad model/effort combination is actionable, not a bare "Invalid request".
 		writeErr(w, http.StatusBadRequest, "Invalid request: "+err.Error())
+	case errors.Is(err, aigentic.ErrNoVisionEngine):
+		// A request carried images but no reachable engine can see them (no Claude access, no
+		// vision-capable local model). Name the gap — never a blind model's invented description.
+		writeErr(w, http.StatusUnprocessableEntity, "The attached image(s) could not be read: no image-capable model is available. Connect Claude or use a vision-capable local model.")
 	case errors.Is(err, aigentic.ErrProcessorUnavailable):
 		writeErr(w, http.StatusServiceUnavailable, "The selected engine is unavailable")
 	case errors.Is(err, prizm.ErrNoSpawner):

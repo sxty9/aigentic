@@ -32,6 +32,17 @@ python3 $L/holistic-mcp.py    validate ./mcp          # MCP tool manifest
   from `~/.claude/projects/**/*.jsonl` and, at/above `SpillAt`, routes cli→api to keep dev
   headroom. Spill is off unless `AIGENTIC_CLI_BUDGET_5H` is set, and needs `~/.claude` read
   access (same constraint as `claude-cli`).
+- **Images are a precondition, not a complexity axis.** A request carrying images (`Inline`
+  media `image/*`) may only go to an engine that can SEE them: the router drops every blind
+  candidate from the chain BEFORE forwarding, so an image never reaches a text-only model that
+  would fabricate a description. Vision is a PROPERTY of the machine, probed not name-listed —
+  the Claude leaves see images; the ollama leaf only when its resolved model advertises
+  `"vision"` via `/api/show` (`ChooseConfig.VisionForKind`, wired by `VisionResolver`; the
+  `NewOllama` leaf re-checks and delivers the bytes on the chat `images` field). No capable
+  engine ⇒ the named `ErrNoVisionEngine` (→ 422), never a silent fallback; the choose router
+  stays gated by `hp_aigentic_api`, so a subject without the cost right can't reach it at all.
+  Unread non-image media (e.g. a PDF on the local engine) is NAMED in the answer, not only in
+  provenance (`finalize`/`noteMediaGap`).
 - **Engines are injectable** (`baseURL`/`*http.Client`/`ExecRunner` fields) so tests stub
   them — keep it that way; the suite must pass with no ollama/API key/CLI login.
 - **G: path context.** `context.go` confines `Request.Paths` under `<ContextRoot>/<Subject>`

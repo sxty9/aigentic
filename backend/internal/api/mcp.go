@@ -97,6 +97,8 @@ func (s *Server) mcpAsk(ctx context.Context, cAny any, args json.RawMessage) (an
 	if err != nil {
 		// Surface a readable tool error (isError:true) the model can adapt to.
 		switch {
+		case errors.Is(err, aigentic.ErrNoVisionEngine):
+			return nil, errors.New("the attached image(s) could not be read: no image-capable model is available")
 		case errors.Is(err, aigentic.ErrProcessorUnavailable):
 			return nil, errors.New("the selected engine is unavailable")
 		case errors.Is(err, prizm.ErrInvalidRequest):

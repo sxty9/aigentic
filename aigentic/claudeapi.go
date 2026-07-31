@@ -190,6 +190,8 @@ func NewClaudeAPI(cfg ClaudeAPIConfig, lim Limits) prizm.Processor {
 			TotalTokens:  out.Usage.InputTokens + out.Usage.OutputTokens,
 			Truncated:    truncated,
 		}
-		return withAsk(Result{Engine: KindClaudeAPI, Model: model, Effort: effort, Usage: u, Context: items}, text, in), nil
+		// Claude sees both images and PDFs (attached as content blocks above), so no attachment is
+		// reported as unread.
+		return finalize(Result{Engine: KindClaudeAPI, Model: model, Effort: effort, Usage: u, Context: items}, text, in, true, true), nil
 	})
 }

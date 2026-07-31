@@ -33,6 +33,50 @@ type ChooseConfig struct {
 	// leaf's own default. Only the ollama attempt is affected — Claude fallbacks are left
 	// with the original request. This is how one host serves a small/large local tier.
 	LocalModels LocalModelTier
+
+	// VisionForKind, when set, reports whether leaf `kind`, running `model` (the effective model
+	// for that attempt: the caller's Model, the tier model, or "" for the leaf default), can PERCEIVE
+	// images. The router consults it ONLY for an image-bearing request, to keep such a request off a
+	// blind model. Capability is a property of the running machine: the Claude leaves see images; the
+	// ollama leaf only when its resolved model advertises the "vision" capability (probed from
+	// /api/show) — never a hardcoded model-name list. nil => the safe default (visionCapable): only
+	// the Claude leaves are treated as vision-capable, so an unprobed local model is assumed blind and
+	// an image is never sent to it on a guess. Wire it with VisionResolver.
+	VisionForKind func(ctx context.Context, kind prizm.Kind, model string) bool
+}
+
+// visionCapable reports whether leaf `kind` running `model` can see images. It defers to a
+// configured VisionForKind probe (a property of the running machine); with none configured it falls
+// back to the safe default — the Claude leaves see images, an unprobed local model is assumed blind.
+func (cfg ChooseConfig) visionCapable(ctx context.Context, kind prizm.Kind, model string) bool {
+	if cfg.VisionForKind != nil {
+		return cfg.VisionForKind(ctx, kind, model)
+	}
+	return kind == KindClaudeCLI || kind == KindClaudeAPI
+}
+
+// VisionResolver builds the router's vision-capability probe over a local-ollama config: the Claude
+// leaves always see images; the ollama leaf sees them only when the model that WOULD run (resolved:
+// explicit → configured default → first pulled) advertises the "vision" capability, read live from
+// ollama's /api/show. Capability is thus a fact about the machine, not a name list that goes stale.
+// Any probe failure resolves to "not capable", so an image is never routed to a model on a guess.
+func VisionResolver(cfg OllamaConfig) func(context.Context, prizm.Kind, string) bool {
+	c := newOllamaClient(cfg)
+	return func(ctx context.Context, kind prizm.Kind, model string) bool {
+		switch kind {
+		case KindClaudeCLI, KindClaudeAPI:
+			return true
+		case KindOllama:
+			resolved, err := c.resolveModel(ctx, model)
+			if err != nil {
+				return false
+			}
+			ok, err := c.supportsVision(ctx, resolved)
+			return err == nil && ok
+		default:
+			return false
+		}
+	}
 }
 
 // LocalModelTier maps a complexity bucket to a local (ollama) model tag ("" => leaf default).
@@ -115,7 +159,7 @@ func OllamaClassifier(cfg OllamaConfig, model string) Classifier {
 		}
 		sys := `Classify the user's task complexity as low, medium, or high. ` +
 			`Do not answer or perform the task — only classify it.`
-		content, _, err := c.chatFormat(ctx, m, sys, in.Prompt, 80, complexitySchema)
+		content, _, err := c.chatFormat(ctx, m, sys, in.Prompt, 80, complexitySchema, nil)
 		if err != nil {
 			return "", "", err
 		}
@@ -245,6 +289,30 @@ func NewChoose(cfg ChooseConfig) prizm.Processor {
 			tierModel = cfg.LocalModels.pick(complexity)
 		}
 
+		// Images decide the engine. Seeing images is a PRECONDITION, not a complexity trade-off: a
+		// request that carries images can only be served by a vision-capable engine, so drop every
+		// blind candidate from the chain BEFORE forwarding. An image must never reach a text-only model
+		// that would fabricate a description of pictures it never received. When nothing capable remains
+		// — no Claude access, no vision-capable local model — refuse with a NAMED state rather than
+		// silently falling back to a blind model.
+		imageRequest := in.hasImages()
+		if imageRequest {
+			kept := make([]prizm.Kind, 0, len(chain))
+			for _, k := range chain {
+				m := fwd.Model
+				if k == KindOllama && tierModel != "" {
+					m = tierModel
+				}
+				if cfg.visionCapable(ctx, k, m) {
+					kept = append(kept, k)
+				}
+			}
+			chain = kept
+			if len(chain) == 0 {
+				return Result{}, ErrNoVisionEngine
+			}
+		}
+
 		var lastErr error
 		for i, k := range chain {
 			attempt := fwd
@@ -270,6 +338,12 @@ func NewChoose(cfg ChooseConfig) prizm.Processor {
 				CLIUsage:   cliUsage,
 			}
 			return res, nil
+		}
+		// Every vision-capable candidate was unavailable. For an image request that is a named
+		// vision refusal (the images could not be read), not a generic "engine unavailable" that
+		// hides why — and never a fallback to a blind model.
+		if imageRequest {
+			return Result{}, ErrNoVisionEngine
 		}
 		if lastErr == nil {
 			lastErr = ErrProcessorUnavailable
