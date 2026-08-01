@@ -461,9 +461,11 @@ func (s *Server) chatsPut(w http.ResponseWriter, r *http.Request, u *auth.User) 
 	}
 }
 
-// paidKind reports whether a kind can reach the metered Anthropic API.
+// paidKind reports whether a kind can reach the metered Anthropic API. choose and extract both
+// route through the router, whose runtime leaf choice may be the paid API and cannot be re-gated
+// through the in-process spawn — so the gate is on the kind, exactly as for choose.
 func paidKind(k prizm.Kind) bool {
-	return k == aigentic.KindClaudeAPI || k == aigentic.KindChoose
+	return k == aigentic.KindClaudeAPI || k == aigentic.KindChoose || k == aigentic.KindExtract
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

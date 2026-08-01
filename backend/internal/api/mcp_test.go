@@ -91,8 +91,85 @@ func TestMCPToolsListAuth(t *testing.T) {
 		Tools []struct{ Name string } `json:"tools"`
 	}
 	_ = json.Unmarshal(env.Result, &res)
-	if len(res.Tools) != 1 || res.Tools[0].Name != "aigentic.ask" {
-		t.Errorf("tools = %+v, want [aigentic.ask]", res.Tools)
+	names := map[string]bool{}
+	for _, tl := range res.Tools {
+		names[tl.Name] = true
+	}
+	if len(res.Tools) != 2 || !names["aigentic.ask"] || !names["aigentic.extract"] {
+		t.Errorf("tools = %+v, want [aigentic.ask aigentic.extract]", res.Tools)
+	}
+}
+
+// A run+api-right holder can call aigentic.extract; the router routes it to the stub engine and the
+// transcription comes back. Proves the file-bearing extract door reaches the shared registry.
+func TestMCPExtractHappyPath(t *testing.T) {
+	username, group := currentUser(t)
+	ol := ollamaStub(t)
+	defer ol.Close()
+	s := newServer(t, group, ol.URL) // admin => holds every right (run + api)
+	access := mintAccess(t, username)
+
+	env := mcpCall(t, s, access, "tools/call", map[string]any{
+		"name": "aigentic.extract",
+		"arguments": map[string]any{
+			"engine": "ollama",
+			"files": []map[string]any{
+				{"path": "notes/plate.txt", "content": "MODEL X", "mediaType": "text/plain"},
+			},
+		},
+	})
+	if env.Error != nil {
+		t.Fatalf("tools/call errored at transport: %+v", env.Error)
+	}
+	tr := decodeToolResult(t, env.Result)
+	if tr.IsError {
+		t.Fatalf("extract returned a tool error: %s", tr.Content[0].Text)
+	}
+	var payload struct {
+		Text   string `json:"text"`
+		Engine string `json:"engine"`
+	}
+	_ = json.Unmarshal([]byte(tr.Content[0].Text), &payload)
+	if payload.Engine != "ollama" || payload.Text == "" {
+		t.Errorf("extract payload = %+v, want engine=ollama and non-empty text", payload)
+	}
+}
+
+// Without the required rights, extract is refused (a tool error). It routes through the router and
+// so carries the same cost gate as choose; a caller lacking the rights never reaches the engine.
+func TestMCPExtractDeniedWithoutRights(t *testing.T) {
+	username, _ := currentUser(t)
+	s := newServer(t, "hp_aigentic_nonexistent_admin", "") // not admin, lacks run + api rights
+	access := mintAccess(t, username)
+
+	env := mcpCall(t, s, access, "tools/call", map[string]any{
+		"name": "aigentic.extract",
+		"arguments": map[string]any{
+			"files": []map[string]any{{"path": "a.png", "content": "Zm9v", "mediaType": "image/png"}},
+		},
+	})
+	if env.Error != nil {
+		t.Fatalf("expected a tool error result, got transport error: %+v", env.Error)
+	}
+	tr := decodeToolResult(t, env.Result)
+	if !tr.IsError {
+		t.Fatalf("expected isError for a caller without the cost:api right")
+	}
+}
+
+// extract with no files is refused before routing.
+func TestMCPExtractRequiresFile(t *testing.T) {
+	username, group := currentUser(t)
+	s := newServer(t, group, "")
+	access := mintAccess(t, username)
+
+	env := mcpCall(t, s, access, "tools/call", map[string]any{
+		"name":      "aigentic.extract",
+		"arguments": map[string]any{},
+	})
+	tr := decodeToolResult(t, env.Result)
+	if !tr.IsError {
+		t.Fatalf("extract with no files should be a tool error")
 	}
 }
 

@@ -62,13 +62,14 @@ func TestMeterProcessorSkipsZeroUsage(t *testing.T) {
 
 func TestRegisterWiresMeterOnlyWhenSet(t *testing.T) {
 	// With OnUsage set, Register must succeed and wrap the leaves (behaviour verified by the
-	// decorator tests above); this guards the wiring compiles and registers all four kinds.
+	// decorator tests above); this guards the wiring compiles and registers all five kinds
+	// (the three leaves + the choose and extract routers).
 	reg := prizm.NewRegistry(4)
 	cfg := Config{OnUsage: func(prizm.Kind, Usage) {}}
 	if err := Register(reg, graveyard.NewMemory(), cfg); err != nil {
 		t.Fatalf("Register with OnUsage: %v", err)
 	}
-	if got := len(reg.Kinds()); got != 4 {
-		t.Errorf("registered %d kinds, want 4", got)
+	if got := len(reg.Kinds()); got != 5 {
+		t.Errorf("registered %d kinds, want 5", got)
 	}
 }

@@ -120,7 +120,7 @@ func TestInfoAndRunHappyPath(t *testing.T) {
 	access := mintAccess(t, username)
 	const csrf = "csrf-token"
 
-	// info lists the four kinds.
+	// info lists the five kinds (three leaves + the choose and extract routers).
 	rec := do(t, s, "GET", base+"info", nil, access, "")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("info: %d %s", rec.Code, rec.Body)
@@ -129,7 +129,7 @@ func TestInfoAndRunHappyPath(t *testing.T) {
 		Kinds []string `json:"kinds"`
 	}
 	_ = json.Unmarshal(rec.Body.Bytes(), &info)
-	if len(info.Kinds) != 4 {
+	if len(info.Kinds) != 5 {
 		t.Errorf("info kinds=%v", info.Kinds)
 	}
 

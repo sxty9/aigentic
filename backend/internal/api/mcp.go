@@ -49,7 +49,107 @@ func (s *Server) mcpRegistry() *mcp.Registry {
 		}, "prompt"),
 		Handler: s.mcpAsk,
 	})
+	reg.Register(mcp.Tool{
+		Name: "aigentic.extract",
+		Description: "Extract the text contained in one or more attached files (images, scans, PDFs) and return it as " +
+			"plain text. Reads text that appears INSIDE images too — nameplates, labels, model/serial numbers, " +
+			"handwriting — not only a PDF's embedded text layer. The router picks a vision-capable engine; an image " +
+			"that no available engine can see is a named error, never an invented transcription. Returns the text " +
+			"plus which engine and model read it and the token usage. Gated like the router: it requires the aigentic " +
+			"'cost:api' right because it may reach the paid Claude API.",
+		InputSchema: schemaObject(map[string]any{
+			"files": map[string]any{
+				"type":        "array",
+				"description": "The files to read. Each is {path, content, mediaType}; content is text for text/* or base64 for image/PDF bytes.",
+				"items": schemaObject(map[string]any{
+					"path":      map[string]any{"type": "string", "description": "Display/provenance path, e.g. \"me/scans/plate.jpg\"."},
+					"content":   map[string]any{"type": "string", "description": "Text content, or base64-encoded bytes for image/PDF."},
+					"mediaType": map[string]any{"type": "string", "description": "e.g. image/png, image/jpeg, application/pdf, text/plain."},
+				}, "path", "content"),
+			},
+			"prompt": map[string]any{"type": "string", "description": "Optional focus, e.g. \"pay attention to the rating plate\"."},
+			"engine": map[string]any{
+				"type":        "string",
+				"enum":        []string{"choose", "ollama", "claude-cli", "claude-api"},
+				"description": "Optional engine to pin. Default \"choose\" (auto-route to a vision-capable engine).",
+			},
+			"model":     map[string]any{"type": "string", "description": "Optional model id override (engine-specific)."},
+			"maxTokens": map[string]any{"type": "integer", "description": "Optional answer-token ceiling (clamped server-side)."},
+		}, "files"),
+		Handler: s.mcpExtract,
+	})
 	return reg
+}
+
+// mcpExtract runs one aigentic.extract call: it enforces the SAME rights as REST /run — the base run
+// right plus the paid-API right (extract routes through the router, which may reach the paid API and
+// cannot be re-gated in-process) — then routes the file-bearing request through the P-layer
+// aigentic.Extract against the shared registry. The subject is server-authoritative.
+func (s *Server) mcpExtract(ctx context.Context, cAny any, args json.RawMessage) (any, error) {
+	u, _ := cAny.(*auth.User)
+	if u == nil {
+		return nil, errors.New("not authenticated")
+	}
+	if !u.Can(rights.GroupRun) {
+		return nil, errors.New("you do not have permission to run aigentic")
+	}
+	// extract can reach the paid API (via the router), so it carries the same cost gate as choose.
+	if !u.Can(rights.GroupAPI) {
+		return nil, errors.New("text extraction requires the aigentic 'cost:api' right (it may use the paid Claude API)")
+	}
+	var a struct {
+		Files []struct {
+			Path      string `json:"path"`
+			Content   string `json:"content"`
+			MediaType string `json:"mediaType"`
+		} `json:"files"`
+		Prompt    string `json:"prompt"`
+		Engine    string `json:"engine"`
+		Model     string `json:"model"`
+		MaxTokens int    `json:"maxTokens"`
+	}
+	if len(args) > 0 {
+		if err := json.Unmarshal(args, &a); err != nil {
+			return nil, errors.New("invalid arguments")
+		}
+	}
+	if len(a.Files) == 0 {
+		return nil, errors.New("extract needs at least one file")
+	}
+	// An engine pin becomes a router force (extract always dispatches under KindExtract → choose).
+	var choose *aigentic.ChooseOptions
+	if a.Engine != "" && a.Engine != string(aigentic.KindChoose) {
+		kind := prizm.Kind(a.Engine)
+		switch kind {
+		case aigentic.KindOllama, aigentic.KindClaudeCLI, aigentic.KindClaudeAPI:
+			choose = &aigentic.ChooseOptions{Force: kind}
+		default:
+			return nil, errors.New("unknown engine: " + a.Engine)
+		}
+	}
+	req := aigentic.Request{Prompt: a.Prompt, Model: a.Model, MaxTokens: a.MaxTokens, Choose: choose}
+	for _, f := range a.Files {
+		req.Inline = append(req.Inline, aigentic.InlineFile{Path: f.Path, Content: f.Content, MediaType: f.MediaType})
+	}
+	res, err := aigentic.Extract(ctx, s.reg, u.Username, req)
+	if err != nil {
+		switch {
+		case errors.Is(err, aigentic.ErrNoVisionEngine):
+			return nil, errors.New("the attached image(s) could not be read: no image-capable model is available")
+		case errors.Is(err, aigentic.ErrProcessorUnavailable):
+			return nil, errors.New("the selected engine is unavailable")
+		case errors.Is(err, prizm.ErrInvalidRequest):
+			return nil, errors.New("invalid request: " + err.Error())
+		default:
+			return nil, errors.New("the engine failed to read the file(s)")
+		}
+	}
+	return map[string]any{
+		"text":   res.Output,
+		"engine": res.Engine,
+		"model":  res.Model,
+		"usage":  res.Usage,
+	}, nil
 }
 
 // mcpAsk runs one aigentic.ask call: it enforces the same rights as REST /run, then routes through
