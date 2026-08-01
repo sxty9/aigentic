@@ -1,26 +1,33 @@
 import { useEffect, useMemo, useState } from 'react';
-import { SegmentedControl, Stack, Text, type ServiceApiClient } from '@holistic/ui';
+import { SegmentedControl, Stack, Text, type ServiceApiClient } from '@holisdk/ui';
 import type { ModelCatalog } from './types';
 
-// The engine/model/effort picker, shared by the Files "Ask AI" dialog and the chat tab so the
-// two never drift. Design goal: no ambiguous "Default" — you always see the concrete model that
-// will run. Model + Effort are shown only where they apply.
-const ENGINES = [
+// The engine/model/effort picker for the Files/Mail "Ask AI" one-shot panels. The full chat tab
+// uses the shared <Chat> from @holisdk/ui (whose own EnginePicker covers machine+model); the two
+// reuse the SAME engine + model constants below so they never drift. Design goal: no ambiguous
+// "Default" — you always see the concrete model that will run. Model + Effort are shown only where
+// they apply.
+//
+// The engines aigentic can route to, in preference order (Auto first). Exported so the shared
+// chat's ChatAdapter builds the SAME machine list without duplicating it.
+export const ENGINES = [
   { value: 'choose', label: 'Auto' },
   { value: 'ollama', label: 'Local' },
   { value: 'claude-cli', label: 'Claude CLI' },
   { value: 'claude-api', label: 'Claude API' },
 ] as const;
-// Used until GET /models answers (and if it can't list the static Claude set).
-const CLAUDE_FALLBACK = [
+// Used until GET /models answers (and if it can't list the static Claude set). Exported so the
+// chat adapter falls back to the SAME Claude list.
+export const CLAUDE_FALLBACK = [
   { id: 'claude-sonnet-4-6', label: 'Sonnet' },
   { id: 'claude-opus-4-8', label: 'Opus' },
   { id: 'claude-haiku-4-5-20251001', label: 'Haiku' },
 ];
 // Effort applies to both Claude engines — the API (output_config.effort) and the CLI
 // (--effort) — but not ollama. "Auto" = send no override, let the model pick; the rest are the
-// CLI/API levels low|medium|high|xhigh|max.
-const EFFORTS = [
+// CLI/API levels low|medium|high|xhigh|max. Exported so the chat's effort control offers the same
+// levels.
+export const EFFORTS = [
   { value: '', label: 'Auto' },
   { value: 'low', label: 'Low' },
   { value: 'medium', label: 'Med' },
@@ -29,7 +36,9 @@ const EFFORTS = [
   { value: 'max', label: 'Max' },
 ] as const;
 
-const usesEffort = (engine: string) => engine === 'claude-cli' || engine === 'claude-api';
+// usesEffort — effort only reaches the two Claude engines; ollama/Auto ignore it. Exported so the
+// chat adapter gates the effort override the same way.
+export const usesEffort = (engine: string) => engine === 'claude-cli' || engine === 'claude-api';
 
 export interface Picker {
   engine: string;

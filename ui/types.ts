@@ -28,7 +28,7 @@ export interface AigenticRequest {
 }
 
 // A structured question the model posed on an interactive turn — rendered as clickable options in
-// the chat bubble. Mirrors the aigentic backend's Ask shape (and @holistic/ui's AskChoice props).
+// the chat bubble. Mirrors the aigentic backend's Ask shape (and @holisdk/ui's AskChoice props).
 export interface AskOption {
   label: string;
   description?: string;
@@ -68,22 +68,12 @@ export interface ModelCatalog {
   ollama: string[];
 }
 
-// One model ollama currently holds resident (GET /ollama/status, from /api/ps). Drives the chat's
-// staged progress ("loading into VRAM…" vs "generating…") and the live residency readout (VRAM,
-// keep-alive time left, loaded context window) — so the user sees why the SSD spins up and how long
-// a local model stays warm on the GPUs.
-export interface LoadedModel {
-  name: string;
-  sizeBytes: number; // total resident size (VRAM + any CPU-offloaded layers)
-  vramBytes: number; // bytes actually on the GPU(s)
-  fullyOnGpu: boolean; // vram covers the whole model (no CPU spill)
-  contextLength: number; // num_ctx the resident instance was loaded with (a change forces a reload)
-  expiresAt: string; // RFC3339 keep-alive unload time ("" if none)
-  expiresInSec: number; // seconds until keep-alive unload, at fetch time
-}
-export interface OllamaStatus {
-  models: LoadedModel[];
-}
+// NOTE: the local-model residency readout (GET /ollama/status → /api/ps: VRAM, keep-alive time
+// left, loaded context window, staged "loading into VRAM…" vs "generating…" progress) used to live
+// in the chat, but the ONE shared <Chat> (@holisdk/ui) exposes no header/engine-selection slot to
+// host it, so it is not carried over. The backend endpoint stays; restore this readout here once the
+// shared chat gains an onEngineChange (or header-accessory) slot — do NOT rebuild a local chat for
+// it (that recreates the forbidden "similar sibling").
 
 // Handoff from the Files "Ask AI" dialog to the full aigentic chat tab: the answer is dropped
 // in localStorage under CHAT_SEED_KEY, then the dashboard switches to aigentic and a new chat

@@ -1,4 +1,4 @@
-import { BoltIcon, registerFolderAction, registerViewerAction, userHasRight, type ServicePlugin } from '@holistic/ui';
+import { BoltIcon, registerFolderAction, registerViewerAction, userHasRight, type ServicePlugin } from '@holisdk/ui';
 import { Dashboard } from './Dashboard';
 import { AskAiFolderPanel, AskAiFilePanel } from './aiExchange';
 import { aiReadable } from './aiFiles';

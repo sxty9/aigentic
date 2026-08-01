@@ -1,10 +1,10 @@
 {
-  "//": "Editor/standalone typecheck convenience. Assumes the holistic repo is a sibling (../../holistic). The authoritative checks are holistic's lint:services + vite build over frontend/external/prizm.",
+  "//": "Editor/standalone typecheck convenience. Assumes the holistic repo is a sibling (../../holistic), whose project-neutral SDK now lives at holisdk/ui and publishes as @holisdk/ui. The authoritative checks are holistic's lint:services + vite build over frontend/external/aigentic.",
   "extends": "../../holistic/frontend/tsconfig.base.json",
   "compilerOptions": {
     "baseUrl": ".",
     "paths": {
-      "@holistic/ui": ["../../holistic/frontend/packages/ui/src/index.ts"]
+      "@holisdk/ui": ["../../holistic/holisdk/ui/src/index.ts"]
     }
   },
   "include": ["."]
