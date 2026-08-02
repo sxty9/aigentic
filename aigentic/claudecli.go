@@ -6,9 +6,11 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"mime"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/sxty9/prizm/prizm"
@@ -249,7 +251,7 @@ func materializeCLIFiles(in Request) (dir, listing string, items []ContextItem, 
 	var b strings.Builder
 	seen := map[string]int{}
 	for _, f := range in.Inline {
-		name := safeName(f.Path, seen)
+		name := safeName(f.Path, f.MediaType, seen)
 		var data []byte
 		if f.isText() {
 			data = []byte(f.Content)
@@ -278,8 +280,11 @@ func materializeCLIFiles(in Request) (dir, listing string, items []ContextItem, 
 }
 
 // safeName reduces a (possibly nested, possibly hostile) virtual path to a single safe filename
-// for the flat work dir, de-duplicating collisions.
-func safeName(p string, seen map[string]int) string {
+// for the flat work dir, de-duplicating collisions. The known mediaType supplies the extension
+// defensively when the caller's path carries none that fits (see extForMedia): a JPEG handed over
+// as "image on page 6" is written "image on page 6.jpg", so the agentic CLI reads it as an image
+// instead of mistaking it for opaque binary and stalling in its tool loop.
+func safeName(p, mediaType string, seen map[string]int) string {
 	name := filepath.Base(filepath.Clean("/" + p)) // strips dirs and any ".." traversal
 	name = strings.Map(func(r rune) rune {
 		if r == '/' || r == '\\' || r == 0 {
@@ -290,6 +295,11 @@ func safeName(p string, seen map[string]int) string {
 	if name == "" || name == "." {
 		name = "file"
 	}
+	if pref, valid := extForMedia(mediaType); pref != "" {
+		if cur := strings.ToLower(filepath.Ext(name)); cur == "" || !valid[cur] {
+			name += pref
+		}
+	}
 	if n := seen[name]; n > 0 {
 		seen[name] = n + 1
 		ext := filepath.Ext(name)
@@ -297,6 +307,51 @@ func safeName(p string, seen map[string]int) string {
 	}
 	seen[name] = 1
 	return name
+}
+
+// preferredExts pins the conventional filename extension for the media types aigentic documents.
+// mime.ExtensionsByType reports valid extensions but in an order we don't control (image/jpeg can
+// surface ".jpe" before ".jpg"), so the common ones are fixed here for a stable, recognizable name.
+var preferredExts = map[string]string{
+	"image/png":       ".png",
+	"image/jpeg":      ".jpg",
+	"image/gif":       ".gif",
+	"image/webp":      ".webp",
+	"application/pdf": ".pdf",
+	"text/plain":      ".txt",
+	"text/markdown":   ".md",
+	"text/html":       ".html",
+	"text/csv":        ".csv",
+}
+
+// extForMedia returns the preferred extension (dot included) for a media type and the set of all
+// extensions that already fit it, so a filename gets a recognizable ending only when the caller's
+// path lacks one that matches. An unknown or empty media type yields ("", nil) — then the name is
+// left as the caller wrote it (a plain text file with no declared type keeps its bare name).
+func extForMedia(mediaType string) (pref string, valid map[string]bool) {
+	mediaType = strings.ToLower(strings.TrimSpace(mediaType))
+	if i := strings.IndexByte(mediaType, ';'); i >= 0 { // drop parameters ("text/plain; charset=utf-8")
+		mediaType = strings.TrimSpace(mediaType[:i])
+	}
+	if mediaType == "" {
+		return "", nil
+	}
+	valid = map[string]bool{}
+	exts, _ := mime.ExtensionsByType(mediaType)
+	for _, e := range exts {
+		valid[strings.ToLower(e)] = true
+	}
+	pref = preferredExts[mediaType]
+	if pref == "" && len(exts) > 0 { // unknown to the table but known to the mime db: pick a stable one
+		sorted := append([]string(nil), exts...)
+		sort.Strings(sorted)
+		pref = sorted[0]
+	}
+	if pref == "" {
+		return "", nil
+	}
+	valid[strings.ToLower(pref)] = true
+	return pref, valid
 }
 
 // cliModelUse is the per-model slice of the CLI's modelUsage map (only the field we rank on).
