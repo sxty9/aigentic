@@ -9,7 +9,12 @@ Graveyard)`; `proc((R,P,G)) -> Response`.
 ```bash
 go build ./... && go vet ./... && go test ./...
 go build -tags lakearch ./... && go test -tags lakearch ./...   # cgo lakearch backend
-python3 ../holistic/services/dashboard/lib/holistic-perms.py validate ./permissions
+go build -tags scheme ./... && go test -tags scheme ./...       # cgo scheme backend
+L=../holistic/services/dashboard/lib
+python3 $L/holistic-perms.py validate ./permissions   # rights manifest
+python3 $L/holistic-config.py validate ./config       # configuration manifest
+python3 $L/holistic-usage.py  validate ./usage        # consumption (token/compute/memory/storage)
+python3 $L/holistic-mcp.py    validate ./mcp          # MCP tool manifest
 ```
 
 ## Architecture
@@ -37,6 +42,21 @@ python3 ../holistic/services/dashboard/lib/holistic-perms.py validate ./permissi
   ignores the supplied ref.
 - **R: the shell is copied, not imported.** `backend/internal/auth/auth.go` is vendored
   verbatim (service-agnostic). Subject and depth are server-authoritative.
+- **Central interface manifests mirror one shape.** `permissions/`, `config/`, `usage/` and
+  `mcp/` each hold one `aigentic.json` drop-in that the dashboard's central tabs aggregate;
+  `./service setup` installs them into `/etc/holistic/{permissions,config,usage,mcp}.d/`. The
+  service tabs stay about the user's experience — rights, config and telemetry live centrally.
+- **Consumption is reported, not evaluated.** `backend/internal/usage` accumulates every leaf
+  run's token `Usage` (wired via `Config.OnUsage` → a P-layer metering decorator in
+  `register.go`, so the shell never decodes Data) and periodically writes tokens + CPU + RSS +
+  on-disk bytes into the passive pool `/var/lib/holistic/usage/aigentic.json`. Best-effort: an
+  unwritable pool never crashes the daemon. `choose` is not metered (its picked leaf, reached
+  through the registry, is — a routed run counts once).
+- **MCP is a second door onto the registry.** `backend/internal/mcp` is a domain-agnostic
+  JSON-RPC transport; `backend/internal/api/mcp.go` exposes the one tool `aigentic.ask` at the
+  fixed server-side path `…/aigentic/mcp`, session-authed, gated by the SAME rights as `/run`,
+  and routed through the P-layer `aigentic.Route` (never decoding Data in the shell). The tool
+  is declared in `mcp/aigentic.json` for the central MCP registry.
 - **The Anthropic key is admin-managed at runtime, not env-baked.** `backend/internal/secret`
   persists it to `AIGENTIC_SECRET_FILE` (default `$STATE_DIRECTORY/anthropic.key`, `0600`); the
   `claude-api` leaf reads it per request via `ClaudeAPIConfig.KeyFunc` (a change needs no
@@ -50,7 +70,9 @@ python3 ../holistic/services/dashboard/lib/holistic-perms.py validate ./permissi
 1. Keep three things in sync: `permissions/aigentic.json` ⇄ `internal/rights` ⇄ the UI right
    constants (`hp_aigentic_run`, `hp_aigentic_api`).
 2. The HTTP shell never decodes Data — it routes on `Header.Kind`. The paid-API right gate
-   in `run()` reads `Header.Kind` only (the routing field), never Data.
+   in `run()` reads `Header.Kind` only (the routing field), never Data. A non-passthrough
+   surface that needs a typed `Result` (the MCP door) goes through the P-layer `aigentic.Route`
+   / the metering decorator, which own the decode — the shell still never touches Data.
 3. Engines map unavailability to `aigentic.ErrProcessorUnavailable` (→ 503), bad input to
    `prizm.ErrInvalidRequest` (→ 400).
 4. The lakearch backend lives behind the `lakearch` build tag so the default build stays
@@ -59,6 +81,11 @@ python3 ../holistic/services/dashboard/lib/holistic-perms.py validate ./permissi
 6. The Anthropic key is a write-only secret: admin-only + CSRF to set/clear, never returned in
    a response or logged (only `configured`/`source`/masked `hint`). Keep `secret.Store` the sole
    path that touches the key file.
+7. Every MCP tool is covered by a right (`mcp/aigentic.json` names an `hp_*` group) and re-checks
+   it in the handler — the same gates as `/run`, including the paid-API check on `claude-api`. Add
+   a tool only by declaring it in the manifest AND enforcing its right in `backend/internal/api/mcp.go`.
+8. Consumption telemetry is best-effort and passive: `usage.Reporter` only ever WRITES numbers to
+   the pool; it must never fail a request or the daemon, and nothing interprets the pool in-repo.
 
 ## Operational prerequisites
 
@@ -74,6 +101,14 @@ baked into the repo):
 - `claude-cli` — the daemon must run under an identity whose `~/.claude` holds a logged-in
   Claude subscription; an unprivileged service user without one cannot make real cli runs (the
   same `~/.claude` read access the `choose` subscription-spill needs).
+- **consumption reporting** — the daemon writes `/var/lib/holistic/usage/aigentic.json`. This
+  needs the shared pool dir to exist and be group-writable by `holistic` (setgid) and the unit to
+  grant `ReadWritePaths=/var/lib/holistic/usage` (both done by `./service setup`, which also adds
+  the service user to `holistic`). Without them the reporter simply no-ops; the service runs
+  unchanged and the Consumption tab shows nothing for aigentic.
+- **MCP** — `…/aigentic/mcp` is session-authed today (addressable via the central infrastructure
+  / same-origin). Minting bearer tokens for external MCP clients (as hosuto does) is a planned
+  follow-up; it is not required for the central registry to see the declared tools.
 
 <!-- BEGIN HOLISTIC AXIOMS — generated by Mercury, do not edit -->
 # Holistic — Axiome & Implementierungsregeln

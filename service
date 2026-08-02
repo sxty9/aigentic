@@ -41,6 +41,9 @@ UNIT="/etc/systemd/system/${SERVICE_ID}.service"
 CADDY_ROUTE="/etc/caddy/conf.d/${SERVICE_ID}.caddy"
 PERMS_FILE="/etc/holistic/permissions.d/${SERVICE_ID}.json"
 CONFIG_FILE="/etc/holistic/config.d/${SERVICE_ID}.json"
+USAGE_FILE="/etc/holistic/usage.d/${SERVICE_ID}.json"
+MCP_FILE="/etc/holistic/mcp.d/${SERVICE_ID}.json"
+USAGE_POOL_DIR="/var/lib/holistic/usage"      # passive consumption pool the dashboard aggregates
 DAEMON_BIN="$SERVICE_APP/bin/${SERVICE_ID}d"
 ADMIN_ENV="$(printf '%s' "${SERVICE_ID:-service}" | tr '[:lower:]' '[:upper:]')_ADMIN_GROUP"
 
@@ -140,6 +143,11 @@ RestartSec=2
 # because ProtectSystem=strict mounts the rest of the tree read-only.
 StateDirectory=$SERVICE_ID
 StateDirectoryMode=0700
+# The consumption reporter writes aigentic's report into the shared passive pool the dashboard
+# aggregates. ProtectSystem=strict mounts /var read-only, so punch a writable hole for just that
+# directory. The leading '-' tolerates a host where the pool was never provisioned (the reporter
+# then simply no-ops), so the unit still starts.
+ReadWritePaths=-$USAGE_POOL_DIR
 # This template performs NO privilege escalation, so it can be sandboxed tightly. A
 # service that adds narrow sudo wrappers (see README) must set NoNewPrivileges=false
 # and relax ProtectSystem — re-verify on the target if you change these.
@@ -204,6 +212,38 @@ install_config() {
   install -d -o "$HOLISTIC_GROUP" -g "$HOLISTIC_GROUP" -m 0755 /etc/holistic/config.d 2>/dev/null \
     || install -d -m 0755 /etc/holistic/config.d
   install -m 0644 "$src" "$CONFIG_FILE"
+}
+
+install_usage() {
+  # The mirror of install_config, for the consumption standard: usage/<id>.json declares WHICH
+  # metrics this service reports (kind + label); the daemon WRITES its current values into the
+  # passive pool /var/lib/holistic/usage/<id>.json; the dashboard's Consumption tab reads both.
+  local src="$REPO_ROOT/usage/$SERVICE_ID.json"
+  [ -f "$src" ] || return 0
+  install -d -o "$HOLISTIC_GROUP" -g "$HOLISTIC_GROUP" -m 0755 /etc/holistic/usage.d 2>/dev/null \
+    || install -d -m 0755 /etc/holistic/usage.d
+  install -m 0644 "$src" "$USAGE_FILE"
+}
+
+install_mcp() {
+  # The mirror of install_config, for the MCP standard: mcp/<id>.json is the auditable,
+  # executable-free declaration of the tools this service serves over MCP and the right that backs
+  # each — so the central infrastructure can see the surface without running code.
+  local src="$REPO_ROOT/mcp/$SERVICE_ID.json"
+  [ -f "$src" ] || return 0
+  install -d -o "$HOLISTIC_GROUP" -g "$HOLISTIC_GROUP" -m 0755 /etc/holistic/mcp.d 2>/dev/null \
+    || install -d -m 0755 /etc/holistic/mcp.d
+  install -m 0644 "$src" "$MCP_FILE"
+}
+
+provision_usage_pool() {
+  # The passive report pool is shared: every holistic-group daemon drops its own <id>.json here for
+  # the dashboard to aggregate. Make it group-writable + setgid so a report inherits the `holistic`
+  # group (0640, dashboard-readable). Non-destructive — never changes an owner the dashboard set,
+  # and best-effort so a missing shared root never fails the install.
+  mkdir -p "$USAGE_POOL_DIR" 2>/dev/null || { warn "could not create $USAGE_POOL_DIR — consumption reports will no-op"; return 0; }
+  getent group "$HOLISTIC_GROUP" >/dev/null 2>&1 && chgrp "$HOLISTIC_GROUP" "$USAGE_POOL_DIR" 2>/dev/null || true
+  chmod 2775 "$USAGE_POOL_DIR" 2>/dev/null || true
 }
 
 grant_secret_access() {
@@ -282,6 +322,13 @@ cmd_setup() {
   log "declaring configuration (config.d)..."
   install_config
 
+  log "declaring consumption metrics (usage.d) + provisioning the passive pool..."
+  install_usage
+  provision_usage_pool
+
+  log "declaring MCP tools (mcp.d)..."
+  install_mcp
+
   log "linking UI plugin into holistic + rebuilding dashboard SPA..."
   install -d "$holistic/frontend/external"
   ln -sfn "$REPO_ROOT/ui" "$holistic/frontend/external/$SERVICE_ID"
@@ -336,6 +383,8 @@ cmd_status() {
   printf '  %-16s %s\n' "route:"  "$([ -f "$CADDY_ROUTE" ] && echo "$CADDY_ROUTE" || echo missing)"
   printf '  %-16s %s\n' "rights:" "$([ -f "$PERMS_FILE" ] && echo "$PERMS_FILE" || echo missing)"
   printf '  %-16s %s\n' "config:" "$([ -f "$CONFIG_FILE" ] && echo "$CONFIG_FILE" || echo missing)"
+  printf '  %-16s %s\n' "usage:"  "$([ -f "$USAGE_FILE" ] && echo "$USAGE_FILE" || echo missing)"
+  printf '  %-16s %s\n' "mcp:"    "$([ -f "$MCP_FILE" ] && echo "$MCP_FILE" || echo missing)"
   if holistic="$(detect_holistic_repo 2>/dev/null)"; then
     plugin="$holistic/frontend/external/$SERVICE_ID"
     printf '  %-16s %s\n' "plugin:" "$([ -L "$plugin" ] && echo "linked ($holistic)" || echo "missing ($holistic)")"
@@ -358,7 +407,9 @@ cmd_uninstall() {
 
   systemctl disable --now "$SERVICE_ID" >/dev/null 2>&1 || true
   rm -f "$UNIT"; systemctl daemon-reload
-  rm -f "$CADDY_ROUTE" "$PERMS_FILE" "$CONFIG_FILE"
+  rm -f "$CADDY_ROUTE" "$PERMS_FILE" "$CONFIG_FILE" "$USAGE_FILE" "$MCP_FILE"
+  # Leave the shared pool DIR (other services report into it); drop only our own report file.
+  rm -f "$USAGE_POOL_DIR/$SERVICE_ID.json" 2>/dev/null || true
 
   local holistic
   if holistic="$(detect_holistic_repo 2>/dev/null)"; then
@@ -413,6 +464,9 @@ Generated artifacts (this script is their source of truth):
   $UNIT
   $CADDY_ROUTE
   $PERMS_FILE
+  $CONFIG_FILE
+  $USAGE_FILE
+  $MCP_FILE
 
 Exit codes: 0 ok · 1 generic · 2 usage · 4 external · 5 config-state · 10 declined
 EOF
