@@ -112,6 +112,56 @@ func TestInfoRequiresAuth(t *testing.T) {
 	}
 }
 
+// TestInfoViaInternalSecret proves a trusted peer service (presentr) can read the published
+// per-request limit over the M2M path — the internal secret, not a session cookie — so its
+// RequestLimit query returns the real ceiling instead of always falling back. A wrong or absent
+// secret still gets 401 (no anonymous read).
+func TestInfoViaInternalSecret(t *testing.T) {
+	reg := prizm.NewRegistry(0)
+	g := graveyard.NewMemory()
+	if err := aigentic.Register(reg, g, aigentic.Config{Ollama: aigentic.OllamaConfig{Model: "stub"}}); err != nil {
+		t.Fatal(err)
+	}
+	td := t.TempDir()
+	store := secretstore.New(filepath.Join(td, "anthropic.key"), filepath.Join(td, "users"), "")
+	const m2m = "peer-secret"
+	s := New(auth.NewVerifier(secret, "sudo"), reg, g, store, nil, nil, nil, m2m)
+
+	get := func(hdr string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest("GET", base+"info", nil)
+		if hdr != "" {
+			r.Header.Set("X-Aigentic-Internal-Secret", hdr)
+		}
+		rec := httptest.NewRecorder()
+		s.Handler().ServeHTTP(rec, r)
+		return rec
+	}
+
+	rec := get(m2m)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("m2m info: got %d want 200 (%s)", rec.Code, rec.Body)
+	}
+	var info struct {
+		MaxRequestBytes int    `json:"maxRequestBytes"`
+		User            string `json:"user"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &info); err != nil {
+		t.Fatal(err)
+	}
+	if info.MaxRequestBytes != aigentic.MaxRequestBytes {
+		t.Errorf("m2m maxRequestBytes=%d want %d", info.MaxRequestBytes, aigentic.MaxRequestBytes)
+	}
+	if info.User != "" {
+		t.Errorf("m2m info leaked a user identity: %q", info.User) // no session ⇒ no user field
+	}
+	if rec := get("wrong-secret"); rec.Code != http.StatusUnauthorized {
+		t.Errorf("wrong secret: got %d want 401", rec.Code)
+	}
+	if rec := get(""); rec.Code != http.StatusUnauthorized {
+		t.Errorf("no secret: got %d want 401", rec.Code)
+	}
+}
+
 func TestInfoAndRunHappyPath(t *testing.T) {
 	username, group := currentUser(t)
 	ol := ollamaStub(t)
@@ -126,11 +176,18 @@ func TestInfoAndRunHappyPath(t *testing.T) {
 		t.Fatalf("info: %d %s", rec.Code, rec.Body)
 	}
 	var info struct {
-		Kinds []string `json:"kinds"`
+		Kinds           []string `json:"kinds"`
+		MaxRequestBytes int      `json:"maxRequestBytes"`
 	}
 	_ = json.Unmarshal(rec.Body.Bytes(), &info)
 	if len(info.Kinds) != 5 {
 		t.Errorf("info kinds=%v", info.Kinds)
+	}
+	// The per-request envelope limit is published as part of the interface (a caller sizes its file
+	// sections against it) and must equal the ceiling the shell actually enforces on /run (maxRunBody
+	// is defined as aigentic.MaxRequestBytes).
+	if info.MaxRequestBytes != maxRunBody {
+		t.Errorf("info maxRequestBytes=%d want %d (== maxRunBody)", info.MaxRequestBytes, maxRunBody)
 	}
 
 	// run kind=ollama routes to the stub.

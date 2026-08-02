@@ -55,6 +55,16 @@ python3 $L/holistic-mcp.py    validate ./mcp          # MCP tool manifest
   the router (hence possibly the paid API and un-re-gatable in-process), it is in `paidKind` and
   carries `hp_aigentic_api`, exactly like `choose`. P-layer entry `aigentic.Extract`; MCP tool
   `aigentic.extract`.
+- **The per-request size limit is aigentic's to publish, not a caller's to guess.** aigentic owns
+  the ceiling on a single request envelope — `aigentic.MaxRequestBytes` (32 MiB, the Anthropic
+  per-request cap); the HTTP shell's `maxRunBody` is DEFINED as that constant, so the enforced wall
+  and the advertised number can never drift. `/info` publishes it as `maxRequestBytes`, and — because
+  a peer service (presentr) asks over the M2M path, not a browser session — `/info` accepts the
+  internal secret as well as a session cookie (it exposes only identity + static capability numbers).
+  A caller that must split a too-large document (presentr splitting a scanned PDF by page) sizes its
+  sections from this reported number and does its own base64/envelope discount; if the ceiling
+  changes, the caller follows with no code change (Schnittstellen-Axiom). aigentic does NOT split —
+  the page cut needs PDF parsing, which belongs to the caller's upload pipeline (see the extract note).
 - **Engines are injectable** (`baseURL`/`*http.Client`/`ExecRunner` fields) so tests stub
   them — keep it that way; the suite must pass with no ollama/API key/CLI login.
 - **G: path context.** `context.go` confines `Request.Paths` under `<ContextRoot>/<Subject>`

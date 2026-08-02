@@ -28,8 +28,11 @@ const (
 	base       = "/api/services/aigentic/"
 	service    = "aigentic"
 	version    = "0.1.0"
-	maxBody    = 1 << 20  // 1 MiB request cap (credential endpoints)
-	maxRunBody = 32 << 20 // 32 MiB for /run — multimodal inline (base64 images/PDFs); Anthropic caps at 32 MB
+	maxBody = 1 << 20 // 1 MiB request cap (credential endpoints)
+	// maxRunBody caps /run — multimodal inline (base64 images/PDFs). It is aigentic's per-request
+	// envelope ceiling, owned by the domain (aigentic.MaxRequestBytes) and published on /info so a
+	// caller sizes its payloads against the same number the shell enforces, never a guess.
+	maxRunBody = aigentic.MaxRequestBytes // 32 MiB
 )
 
 // Server wires the session verifier, the processor registry and the admin-managed API-key
@@ -61,8 +64,10 @@ type handler func(w http.ResponseWriter, r *http.Request, u *auth.User)
 // Handler returns the routed http.Handler (Go 1.22 method+path patterns).
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
-	// Public to any signed-in holistic user: service identity + registered kinds.
-	mux.HandleFunc("GET "+base+"info", s.guard("", false, s.info))
+	// Service identity + registered kinds + the published per-request limit. Readable by any
+	// signed-in holistic user AND by a trusted peer presenting the internal M2M secret (presentr
+	// queries maxRequestBytes to size its file sections), so it is not behind the session-only guard.
+	mux.HandleFunc("GET "+base+"info", s.info)
 	// Rights-gated write: run a processor. CSRF double-submit guard required. A second,
 	// Kind-aware right (hp_aigentic_api) is enforced inside run() for the paid engines.
 	mux.HandleFunc("POST "+base+"run", s.guard(rights.GroupRun, true, s.run))
@@ -154,15 +159,32 @@ func (s *Server) guard(perm string, csrf bool, h handler) http.HandlerFunc {
 	}
 }
 
-// info echoes the resolved identity and the kinds the registry can route.
-func (s *Server) info(w http.ResponseWriter, _ *http.Request, u *auth.User) {
-	writeJSON(w, http.StatusOK, map[string]any{
-		"service": service,
-		"version": version,
-		"user":    u.Username,
-		"isAdmin": u.IsAdmin,
-		"kinds":   s.reg.Kinds(),
-	})
+// info echoes the service identity, the kinds the registry can route, and aigentic's published
+// per-request envelope limit (maxRequestBytes). A caller that must split a too-large file reads
+// maxRequestBytes to size its sections against the number aigentic OWNS rather than a private guess
+// (Schnittstellen-Axiom). It is served to any signed-in holistic user AND to a trusted peer service
+// presenting the internal M2M secret — the descriptor holds no data beyond the caller's own identity
+// and static capability numbers, so honoring the M2M secret here leaks nothing a /run caller could
+// not already learn. The M2M path is used by presentr's RequestLimit query.
+func (s *Server) info(w http.ResponseWriter, r *http.Request) {
+	out := map[string]any{
+		"service":         service,
+		"version":         version,
+		"kinds":           s.reg.Kinds(),
+		"maxRequestBytes": aigentic.MaxRequestBytes,
+	}
+	if got := r.Header.Get("X-Aigentic-Internal-Secret"); got != "" && s.internal != "" && hmac.Equal([]byte(got), []byte(s.internal)) {
+		writeJSON(w, http.StatusOK, out)
+		return
+	}
+	u, err := s.v.User(r)
+	if err != nil {
+		writeErr(w, http.StatusUnauthorized, "Not authenticated")
+		return
+	}
+	out["user"] = u.Username
+	out["isAdmin"] = u.IsAdmin
+	writeJSON(w, http.StatusOK, out)
 }
 
 // run decodes ONLY Header₀ + opaque Data, stamps the server-authoritative subject, gates
