@@ -74,7 +74,8 @@ func (s *Store) Save(subject string, data []byte) error {
 }
 
 // writeFileAtomic creates the parent dir (0700) and publishes content (0600) via a uniquely
-// named temp file renamed over the target.
+// named temp file that is fsync'd, then renamed over the target (temp → fsync → rename), so a
+// crash can never leave the target pointing at a torn or empty write.
 func writeFileAtomic(path string, content []byte) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -91,6 +92,11 @@ func writeFileAtomic(path string, content []byte) error {
 		return err
 	}
 	if err := tmp.Chmod(0o600); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
+		return err
+	}
+	if err := tmp.Sync(); err != nil { // flush to disk before the rename so a crash cannot expose a torn file
 		_ = tmp.Close()
 		_ = os.Remove(tmpName)
 		return err

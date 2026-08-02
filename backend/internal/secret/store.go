@@ -291,7 +291,8 @@ func (s *Store) removeUserFile(subject, name string) error {
 }
 
 // writeFileAtomic creates the parent dir (0700) and publishes content (0600) via a uniquely
-// named temp file renamed over the target.
+// named temp file that is fsync'd, then renamed over the target (temp → fsync → rename), so a
+// crash can never leave a credential file torn or empty.
 func writeFileAtomic(path, content string) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -303,6 +304,11 @@ func writeFileAtomic(path, content string) error {
 	}
 	tmpName := tmp.Name()
 	if _, err := tmp.WriteString(content + "\n"); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
+		return err
+	}
+	if err := tmp.Sync(); err != nil { // durably flush before the rename: credentials must survive a crash intact
 		_ = tmp.Close()
 		_ = os.Remove(tmpName)
 		return err
