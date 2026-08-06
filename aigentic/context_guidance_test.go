@@ -26,7 +26,7 @@ func TestAssembleInjectsSubstrateGuidance(t *testing.T) {
 	writeFile(t, filepath.Join(root, "u", "doc.txt"), []byte("hi"))
 
 	g := describingGrave{graveyard.NewMemory()}
-	prompt, _, _, err := assemble(context.Background(), envFor(g, "u"),
+	prompt, _, _, _, err := assemble(context.Background(), envFor(g, "u"),
 		Request{Prompt: "summarize", Paths: []string{"doc.txt"}}, Limits{ContextRoot: root})
 	if err != nil {
 		t.Fatalf("assemble: %v", err)
@@ -61,7 +61,7 @@ func TestAssembleNoGuidanceForPlainGrave(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, "u", "doc.txt"), []byte("hi"))
 
-	prompt, _, _, err := assemble(context.Background(), envFor(graveyard.NewMemory(), "u"),
+	prompt, _, _, _, err := assemble(context.Background(), envFor(graveyard.NewMemory(), "u"),
 		Request{Prompt: "x", Paths: []string{"doc.txt"}}, Limits{ContextRoot: root})
 	if err != nil {
 		t.Fatalf("assemble: %v", err)

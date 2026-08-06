@@ -123,9 +123,10 @@ type MCPRef struct {
 // user's confined fs access — hand aigentic the bytes, keeping the daemon unprivileged and
 // fs-free for the private Samba share.
 type InlineFile struct {
-	Path      string `json:"path"`                // display/provenance path (e.g. "me/Notes/spec.md"); never used for fs access
-	Content   string `json:"content"`             // text content (mediaType empty/text), else base64-encoded bytes
-	MediaType string `json:"mediaType,omitempty"` // "" or "text/*" => text; "image/png|jpeg|gif|webp" => vision; "application/pdf" => document; anything else => listed as an attachment only (counted, not read)
+	Path      string        `json:"path"`                // display/provenance path (e.g. "me/Notes/spec.md"); never used for fs access
+	Content   string        `json:"content,omitempty"`   // FRESH bytes: text content (mediaType empty/text), else base64-encoded media. Sent on the first turn, before anything is stored. Mutually exclusive with Ref.
+	Ref       graveyard.Ref `json:"ref,omitempty"`       // graveyard reference to bytes stored on an EARLIER turn — sent instead of Content so the same attachment is not retransmitted every turn. Resolved back to the identical bytes via graveyard.Resolve (see context.go).
+	MediaType string        `json:"mediaType,omitempty"` // "" or "text/*" => text; "image/png|jpeg|gif|webp" => vision; "application/pdf" => document; anything else => listed as an attachment only (counted, not read)
 }
 
 // isText reports whether an inline file carries plain text (vs. base64 media).

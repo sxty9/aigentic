@@ -24,7 +24,12 @@ import (
 // It never hard-fails on an individual path: a missing, denied, binary, oversized or
 // over-budget path is recorded as a skipped ContextItem and skipped. Only a graveyard
 // write error aborts (it signals a substrate fault, not a bad request).
-func assemble(ctx context.Context, env prizm.Env, in Request, lim Limits) (prompt string, items []ContextItem, truncated bool, err error) {
+// The returned resolved map carries, keyed by InlineFile.Path, the base64 payload of every media
+// inline attachment AFTER resolution — the fresh Content bytes, or the bytes fetched from the
+// graveyard for a Ref-only attachment. The Claude leaves consult it instead of InlineFile.Content
+// so a Ref-only turn attaches the exact same image/document block a Content turn would (claudeapi.go,
+// claudecli.go). Text attachments are folded into the prompt here and never appear in the map.
+func assemble(ctx context.Context, env prizm.Env, in Request, lim Limits) (prompt string, items []ContextItem, truncated bool, resolved map[string]string, err error) {
 	budget := lim.MaxContextBytes
 	if budget <= 0 {
 		budget = DefaultMaxContextBytes
@@ -55,7 +60,7 @@ func assemble(ctx context.Context, env prizm.Env, in Request, lim Limits) (promp
 			}
 			ref, perr := putProvenance(ctx, env, lim, data)
 			if perr != nil {
-				return "", nil, false, fmt.Errorf("graveyard put %q: %w", f.rel, perr)
+				return "", nil, false, nil, fmt.Errorf("graveyard put %q: %w", f.rel, perr)
 			}
 			fmt.Fprintf(&b, "<file path=%q>\n%s\n</file>\n", f.rel, data)
 			used += len(data)
@@ -63,17 +68,37 @@ func assemble(ctx context.Context, env prizm.Env, in Request, lim Limits) (promp
 		}
 	}
 
-	// Inline files: caller-supplied bytes (no fs access). Same budget + binary filter as
-	// Paths, and stored in the graveyard for identical provenance.
+	// Inline files: caller-supplied bytes (no fs access). Each attachment is first resolved to
+	// its bytes — either the fresh Content of this turn, or, for a Ref-only attachment, the bytes
+	// stored on an earlier turn — so a follow-up turn need not retransmit content already in the
+	// graveyard. The resolved bytes then flow through the SAME budget + binary filter as before.
 	for _, f := range in.Inline {
+		data, rerr := graveyard.Resolve(ctx, env.Grave, graveyard.Attachment{Ref: f.Ref, Content: []byte(f.Content)})
+		if rerr != nil {
+			// A Ref that names nothing (given but not stored) is a hard fault — the caller
+			// referenced content that isn't there, and a text-only guess is not acceptable.
+			// An empty MEDIA attachment (no Content, no Ref) would otherwise become an empty
+			// image/document block downstream, so it is a clear error here rather than a silent
+			// blank block. An empty TEXT attachment keeps the long-standing "empty" skip.
+			if f.Ref != "" || !f.isText() {
+				return "", nil, false, nil, fmt.Errorf("resolve inline %q: %w", f.Path, rerr)
+			}
+			items = append(items, ContextItem{Path: f.Path, Skipped: "empty"})
+			continue
+		}
 		if !f.isText() {
 			// Non-text media (image/pdf/other): a vision-capable leaf (claude-api) attaches it
 			// as a content block; here we only NAME it so text-only engines still account for it.
+			// The resolved base64 payload is published so the Claude leaves attach the identical
+			// block whether the caller sent Content or a Ref.
+			if resolved == nil {
+				resolved = map[string]string{}
+			}
+			resolved[f.Path] = string(data)
 			fmt.Fprintf(&b, "<attachment path=%q type=%q/>\n", f.Path, f.MediaType)
 			items = append(items, ContextItem{Path: f.Path, Skipped: "attachment"})
 			continue
 		}
-		data := []byte(f.Content)
 		skip := ""
 		switch {
 		case used >= budget || len(data) > budget-used:
@@ -90,9 +115,17 @@ func assemble(ctx context.Context, env prizm.Env, in Request, lim Limits) (promp
 			}
 			continue
 		}
-		ref, perr := putProvenance(ctx, env, lim, data)
-		if perr != nil {
-			return "", nil, false, fmt.Errorf("graveyard put inline %q: %w", f.Path, perr)
+		// Provenance is only written for FRESH bytes this turn (Content, no Ref); a Ref-only
+		// attachment is already stored, so it is not re-Put.
+		var ref graveyard.Ref
+		if f.Ref == "" && f.Content != "" {
+			var perr error
+			ref, perr = putProvenance(ctx, env, lim, data)
+			if perr != nil {
+				return "", nil, false, nil, fmt.Errorf("graveyard put inline %q: %w", f.Path, perr)
+			}
+		} else if f.Ref != "" {
+			ref = f.Ref
 		}
 		fmt.Fprintf(&b, "<file path=%q>\n%s\n</file>\n", f.Path, data)
 		used += len(data)
@@ -100,7 +133,7 @@ func assemble(ctx context.Context, env prizm.Env, in Request, lim Limits) (promp
 	}
 
 	prompt = composePrompt(substrateGuidance(lim, env.Grave), b.String(), in)
-	return prompt, items, truncated, nil
+	return prompt, items, truncated, resolved, nil
 }
 
 // putProvenance records a context datum in the graveyard for content-addressed provenance —

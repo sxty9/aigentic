@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/sxty9/prizm/graveyard"
 	"github.com/sxty9/prizm/prizm"
 )
 
@@ -156,7 +157,7 @@ func NewClaudeCLI(cfg ClaudeCLIConfig, lim Limits) prizm.Processor {
 		// instead of naming/embedding files in the prompt (which made it try to open a path that
 		// "doesn't exist on disk"), materialize the attachments to a private temp dir and run the
 		// CLI THERE — its Read tool then opens them for real (images via vision included).
-		workdir, listing, items, merr := materializeCLIFiles(in)
+		workdir, listing, items, merr := materializeCLIFiles(ctx, env, in)
 		if merr != nil {
 			return Result{}, fmt.Errorf("%w: claude-cli workdir: %v", ErrProcessorUnavailable, merr)
 		}
@@ -239,8 +240,10 @@ func NewClaudeCLI(cfg ClaudeCLIConfig, lim Limits) prizm.Processor {
 // materializeCLIFiles writes the request's inline attachments into a fresh private temp dir so
 // the agentic CLI can open them as real files. Returns the dir (caller removes it), a human file
 // listing for the prompt, and provenance items. No inline files → ("", "", nil, nil), so a plain
-// chat turn runs without a work dir.
-func materializeCLIFiles(in Request) (dir, listing string, items []ContextItem, err error) {
+// chat turn runs without a work dir. Each attachment's bytes are resolved through the graveyard
+// (fresh Content, or the bytes stored on an earlier turn for a Ref-only attachment) before being
+// written; a Ref that names nothing is a hard fault.
+func materializeCLIFiles(ctx context.Context, env prizm.Env, in Request) (dir, listing string, items []ContextItem, err error) {
 	if len(in.Inline) == 0 {
 		return "", "", nil, nil
 	}
@@ -252,12 +255,22 @@ func materializeCLIFiles(in Request) (dir, listing string, items []ContextItem, 
 	seen := map[string]int{}
 	for _, f := range in.Inline {
 		name := safeName(f.Path, f.MediaType, seen)
+		resolvedBytes, rerr := graveyard.Resolve(ctx, env.Grave, graveyard.Attachment{Ref: f.Ref, Content: []byte(f.Content)})
+		if rerr != nil {
+			// A Ref that names nothing is a hard fault; an empty attachment (no Content, no Ref)
+			// is just a name-only entry — nothing to write.
+			if f.Ref != "" {
+				return "", "", nil, fmt.Errorf("resolve inline %q: %w", f.Path, rerr)
+			}
+			items = append(items, ContextItem{Path: f.Path, Skipped: "empty"})
+			continue
+		}
 		var data []byte
 		if f.isText() {
-			data = []byte(f.Content)
+			data = resolvedBytes
 		} else {
 			// image/pdf/other rides as base64; decode back to real bytes on disk.
-			d, derr := base64.StdEncoding.DecodeString(f.Content)
+			d, derr := base64.StdEncoding.DecodeString(string(resolvedBytes))
 			if derr != nil {
 				items = append(items, ContextItem{Path: f.Path, Skipped: "attachment"})
 				continue

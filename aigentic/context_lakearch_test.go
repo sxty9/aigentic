@@ -24,7 +24,7 @@ func TestAssembleStoresInLakearch(t *testing.T) {
 	}
 	defer k.Close()
 
-	prompt, items, _, err := assemble(context.Background(), envFor(k, "alice"),
+	prompt, items, _, _, err := assemble(context.Background(), envFor(k, "alice"),
 		Request{Prompt: "summarize", Paths: []string{"doc.txt"}}, Limits{ContextRoot: root})
 	if err != nil {
 		t.Fatalf("assemble: %v", err)
