@@ -62,6 +62,15 @@ const (
 	// DefaultContextRoot is the allowlisted root under which Paths are confined; the actual
 	// scope is <root>/<Subject> so callers cannot read each other's files.
 	DefaultContextRoot = "/var/lib/aigentic/context"
+	// MaxRequestBytes is aigentic's ceiling on the ENCODED size of a single request envelope — the
+	// whole JSON body carrying the prompt, the system text and any base64-encoded inline attachments
+	// (images/PDFs). It is the wall a request actually hits: the HTTP shell caps /run at this size,
+	// and it matches the Anthropic Messages API's own 32 MiB per-request limit downstream. aigentic
+	// OWNS this number and publishes it as part of its interface (the /info endpoint's
+	// maxRequestBytes field), so a caller that must split a too-large document sizes its sections
+	// against a value aigentic reports rather than a private guess about aigentic's capacity: if this
+	// ceiling ever changes, every caller follows with no code change on its side (Schnittstellen-Axiom).
+	MaxRequestBytes = 32 << 20 // 32 MiB
 )
 
 // defaultSystem is the shared system preamble. Kept tiny.
