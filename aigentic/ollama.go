@@ -365,11 +365,16 @@ func OllamaStatus(ctx context.Context, cfg OllamaConfig) ([]LoadedModel, error) 
 
 // imageData returns the base64 image payloads from a request's inline attachments, in order, for
 // ollama's /api/chat "images" field. Empty content is skipped (nothing to deliver).
-func imageData(in Request) []string {
+// imageData collects the base64 image payloads to hand ollama's vision model, drawn from the
+// resolved map assemble produced (so a Ref-only image contributes its stored bytes, not an empty
+// string). An image whose resolved payload is empty is dropped rather than delivered blank.
+func imageData(in Request, resolved map[string]string) []string {
 	var out []string
 	for _, f := range in.Inline {
-		if f.isImage() && f.Content != "" {
-			out = append(out, f.Content)
+		if f.isImage() {
+			if b := resolved[f.Path]; b != "" {
+				out = append(out, b)
+			}
 		}
 	}
 	return out
@@ -392,6 +397,10 @@ func NewOllama(cfg OllamaConfig, lim Limits) prizm.Processor {
 		// consult its OWN advertised capabilities; refuse with a named state when it cannot see images
 		// (the router already keeps blind models off image requests — this guards the forced/direct
 		// path that reaches the leaf without the router). A vision model is fed the image bytes.
+		prompt, items, truncated, resolvedInline, err := assemble(ctx, env, in, lim)
+		if err != nil {
+			return Result{}, err
+		}
 		var images []string
 		if in.hasImages() {
 			resolved, rerr := c.resolveModel(ctx, model)
@@ -405,11 +414,10 @@ func NewOllama(cfg OllamaConfig, lim Limits) prizm.Processor {
 			if !ok {
 				return Result{}, fmt.Errorf("%w: ollama model %q has no vision capability", ErrNoVisionEngine, resolved)
 			}
-			images = imageData(in)
-		}
-		prompt, items, truncated, err := assemble(ctx, env, in, lim)
-		if err != nil {
-			return Result{}, err
+			// Deliver the resolved base64 (fresh Content or graveyard bytes for a Ref-only image),
+			// never InlineFile.Content raw — a Ref-only image would otherwise reach the vision model
+			// as no image at all, and it would answer about a picture it never saw.
+			images = imageData(in, resolvedInline)
 		}
 		content, usage, err := c.chat(ctx, model, askSystem(defaultSystem, in), prompt, answerBudget(in, lim.MaxTokens), images)
 		if err != nil {

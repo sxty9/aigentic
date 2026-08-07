@@ -54,7 +54,7 @@ func TestAssembleConfinementProvenanceAndFilters(t *testing.T) {
 		Paths:  []string{"doc.txt", "pkg", "bin.dat", "big.txt", "../bob/secret.txt", "nope.txt"},
 	}
 
-	prompt, items, truncated, err := assemble(context.Background(), envFor(grave, "alice"), in, lim)
+	prompt, items, truncated, _, err := assemble(context.Background(), envFor(grave, "alice"), in, lim)
 	if err != nil {
 		t.Fatalf("assemble: %v", err)
 	}
@@ -101,7 +101,7 @@ func TestAssembleSubjectIsolation(t *testing.T) {
 	grave := graveyard.NewMemory()
 	lim := Limits{ContextRoot: root}
 	// bob asks for doc.txt — it resolves under bob's scope, which has no such file.
-	_, items, _, err := assemble(context.Background(), envFor(grave, "bob"), Request{Prompt: "x", Paths: []string{"doc.txt"}}, lim)
+	_, items, _, _, err := assemble(context.Background(), envFor(grave, "bob"), Request{Prompt: "x", Paths: []string{"doc.txt"}}, lim)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +117,7 @@ func TestAssembleTruncation(t *testing.T) {
 
 	grave := graveyard.NewMemory()
 	lim := Limits{ContextRoot: root, MaxContextBytes: 10}
-	_, items, truncated, err := assemble(context.Background(), envFor(grave, "u"),
+	_, items, truncated, _, err := assemble(context.Background(), envFor(grave, "u"),
 		Request{Prompt: "x", Paths: []string{"a.txt", "b.txt"}}, lim)
 	if err != nil {
 		t.Fatal(err)
@@ -147,7 +147,7 @@ func TestAssembleInlineContent(t *testing.T) {
 		},
 	}
 
-	prompt, items, truncated, err := assemble(context.Background(), envFor(grave, "nanu"), in, lim)
+	prompt, items, truncated, _, err := assemble(context.Background(), envFor(grave, "nanu"), in, lim)
 	if err != nil {
 		t.Fatalf("assemble: %v", err)
 	}
@@ -177,7 +177,7 @@ func TestAssembleInlineBudget(t *testing.T) {
 	grave := graveyard.NewMemory()
 	lim := Limits{ContextRoot: t.TempDir(), MaxContextBytes: 16}
 	in := Request{Prompt: "x", Inline: []InlineFile{{Path: "me/big.txt", Content: strings.Repeat("a", 100)}}}
-	_, items, truncated, err := assemble(context.Background(), envFor(grave, "nanu"), in, lim)
+	_, items, truncated, _, err := assemble(context.Background(), envFor(grave, "nanu"), in, lim)
 	if err != nil {
 		t.Fatalf("assemble: %v", err)
 	}

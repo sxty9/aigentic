@@ -1,11 +1,14 @@
 package aigentic
 
 import (
+	"context"
 	"encoding/base64"
 	"os"
 	"path/filepath"
 	"sort"
 	"testing"
+
+	"github.com/sxty9/prizm/graveyard"
 )
 
 // safeName must give a media file a recognizable extension when the caller's path lacks one, so
@@ -63,7 +66,7 @@ func TestMaterializeCLIFilesGivesImageAnExtension(t *testing.T) {
 		MediaType: "image/jpeg",
 		Content:   base64.StdEncoding.EncodeToString([]byte{0xff, 0xd8, 0xff, 0xe0}),
 	}}}
-	dir, listing, items, err := materializeCLIFiles(req)
+	dir, listing, items, err := materializeCLIFiles(context.Background(), envFor(graveyard.NewMemory(), "u"), req)
 	if err != nil {
 		t.Fatalf("materializeCLIFiles: %v", err)
 	}

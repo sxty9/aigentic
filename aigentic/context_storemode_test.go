@@ -38,7 +38,7 @@ func TestStoreModeSuppressesProvenanceAndGuidance(t *testing.T) {
 
 	t.Run("provenance (default)", func(t *testing.T) {
 		g := &recordingGrave{leitfaden: leitfaden}
-		prompt, items, _, err := assemble(context.Background(), envFor(g, "alice"), req, Limits{ContextRoot: root})
+		prompt, items, _, _, err := assemble(context.Background(), envFor(g, "alice"), req, Limits{ContextRoot: root})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -55,7 +55,7 @@ func TestStoreModeSuppressesProvenanceAndGuidance(t *testing.T) {
 
 	t.Run("store", func(t *testing.T) {
 		g := &recordingGrave{leitfaden: leitfaden}
-		prompt, items, _, err := assemble(context.Background(), envFor(g, "alice"),
+		prompt, items, _, _, err := assemble(context.Background(), envFor(g, "alice"),
 			req, Limits{ContextRoot: root, StoreMode: true})
 		if err != nil {
 			t.Fatal(err)

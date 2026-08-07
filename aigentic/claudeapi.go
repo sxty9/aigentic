@@ -33,22 +33,23 @@ func anthropicError(r io.Reader) string {
 
 // claudeUserContent builds the user-message content for the Messages API: a plain string when
 // there are no media attachments, else an array of image/document blocks followed by the text
-// block (the API expects media blocks to precede the text). Image/PDF bytes ride in
-// InlineFile.Content as base64; other media types are ignored here (context.go already named
-// them in the prompt so the model knows they exist).
-func claudeUserContent(in Request, prompt string) any {
+// block (the API expects media blocks to precede the text). The base64 payload comes from the
+// resolved map assemble returned — the fresh Content of this turn, or the bytes fetched from the
+// graveyard for a Ref-only attachment — so the block is identical either way. Other media types
+// are ignored here (context.go already named them in the prompt so the model knows they exist).
+func claudeUserContent(in Request, prompt string, resolved map[string]string) any {
 	var blocks []map[string]any
 	for _, f := range in.Inline {
 		switch {
 		case strings.HasPrefix(f.MediaType, "image/"):
 			blocks = append(blocks, map[string]any{
 				"type":   "image",
-				"source": map[string]any{"type": "base64", "media_type": f.MediaType, "data": f.Content},
+				"source": map[string]any{"type": "base64", "media_type": f.MediaType, "data": resolved[f.Path]},
 			})
 		case f.MediaType == "application/pdf":
 			blocks = append(blocks, map[string]any{
 				"type":   "document",
-				"source": map[string]any{"type": "base64", "media_type": f.MediaType, "data": f.Content},
+				"source": map[string]any{"type": "base64", "media_type": f.MediaType, "data": resolved[f.Path]},
 			})
 		}
 	}
@@ -122,7 +123,7 @@ func NewClaudeAPI(cfg ClaudeAPIConfig, lim Limits) prizm.Processor {
 		if effort != "" && !validEffort(effort) {
 			return Result{}, fmt.Errorf("%w: bad effort %q", prizm.ErrInvalidRequest, effort)
 		}
-		prompt, items, truncated, err := assemble(ctx, env, in, lim)
+		prompt, items, truncated, resolved, err := assemble(ctx, env, in, lim)
 		if err != nil {
 			return Result{}, err
 		}
@@ -130,7 +131,7 @@ func NewClaudeAPI(cfg ClaudeAPIConfig, lim Limits) prizm.Processor {
 			"model":      model,
 			"max_tokens": answerBudget(in, lim.MaxTokens),
 			"system":     askSystem(defaultSystem, in),
-			"messages":   []map[string]any{{"role": "user", "content": claudeUserContent(in, prompt)}},
+			"messages":   []map[string]any{{"role": "user", "content": claudeUserContent(in, prompt, resolved)}},
 		}
 		if effort != "" {
 			// Anthropic carries reasoning effort inside output_config, not top-level.
