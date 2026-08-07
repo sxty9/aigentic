@@ -228,7 +228,9 @@ func NewClaudeCLI(cfg ClaudeCLIConfig, lim Limits) prizm.Processor {
 		if reported == "" {
 			reported = primaryModel(out.ModelUsage)
 		}
-		return withAsk(Result{Engine: KindClaudeCLI, Model: reported, Effort: effort, Usage: u, Context: items}, out.Result, in), nil
+		// The agentic CLI reads the materialized attachments as real files — images via vision, PDFs as
+		// documents — so no attachment is reported as unread.
+		return finalize(Result{Engine: KindClaudeCLI, Model: reported, Effort: effort, Usage: u, Context: items}, out.Result, in, true, true), nil
 	})
 }
 

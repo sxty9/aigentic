@@ -71,7 +71,13 @@ func Register(reg *prizm.Registry, grave graveyard.Graveyard, cfg Config) error 
 			return err
 		}
 	}
-	return reg.Register(KindChoose, prizm.NewPrizm(NewChoose(cfg.Choose), grave, prizm.WithSpawner(reg)))
+	if err := reg.Register(KindChoose, prizm.NewPrizm(NewChoose(cfg.Choose), grave, prizm.WithSpawner(reg))); err != nil {
+		return err
+	}
+	// extract is a router over choose (it forwards the file-bearing request through the same
+	// vision-aware path), so it too needs the registry as its spawner. It is not metered: the leaf
+	// choose resolves to is, so an extraction run counts once — like a routed ask.
+	return reg.Register(KindExtract, prizm.NewPrizm(NewExtract(), grave, prizm.WithSpawner(reg)))
 }
 
 // meterProcessor wraps a leaf processor to report its token Usage to a sink after each successful

@@ -173,6 +173,11 @@ func configFromEnv(sec *secretstore.Store, ctxCap func() int) aigentic.Config {
 				Low:  os.Getenv("AIGENTIC_OLLAMA_LOW_MODEL"),
 				High: os.Getenv("AIGENTIC_OLLAMA_HIGH_MODEL"),
 			},
+			// Vision precondition: a request that carries images can only go to an engine that sees
+			// them. The Claude leaves do; a local model does only when it advertises "vision"
+			// (probed live from ollama's /api/show), so a local vision model qualifies and a text
+			// model is kept off image requests — capability by fact, not by a model-name list.
+			VisionForKind: aigentic.VisionResolver(ollama),
 		},
 	}
 }

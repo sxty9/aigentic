@@ -42,6 +42,16 @@ const (
 // to 503 Service Unavailable, whereas an invalid request maps to 400.
 var ErrProcessorUnavailable = fmt.Errorf("aigentic: processor unavailable")
 
+// ErrNoVisionEngine means an image-bearing request could not be served because NO reachable
+// engine can actually see images: no Claude access is configured and no local model advertises
+// the "vision" capability. It is a distinct, NAMED refusal — the router and the ollama leaf
+// return it rather than falling back to a text-only model, which would answer as if it had seen
+// images it never received (a fabricated description is the most harmful failure an AI service can
+// produce). It deliberately does NOT wrap ErrProcessorUnavailable, so the router's availability
+// fallback loop never mistakes it for "try the next engine" and the shell can name the gap in its
+// own words (see the HTTP dispatch mapping).
+var ErrNoVisionEngine = fmt.Errorf("aigentic: no vision-capable engine for an image request")
+
 const (
 	// DefaultMaxTokens is the answer-token budget used when a request sets none.
 	DefaultMaxTokens = 4096
@@ -112,6 +122,22 @@ type InlineFile struct {
 // isText reports whether an inline file carries plain text (vs. base64 media).
 func (f InlineFile) isText() bool {
 	return f.MediaType == "" || strings.HasPrefix(f.MediaType, "text/")
+}
+
+// isImage reports whether an inline file is an image (needs a vision-capable engine to be seen).
+func (f InlineFile) isImage() bool { return strings.HasPrefix(f.MediaType, "image/") }
+
+// hasImages reports whether the request carries any image attachment. Such a request has a HARD
+// precondition — the engine that runs it must be able to see images — which the router enforces
+// (choose.go) and the ollama leaf re-checks against its model's advertised capabilities. It is a
+// precondition, not a complexity trade-off: an image never reaches a blind model on a guess.
+func (in Request) hasImages() bool {
+	for _, f := range in.Inline {
+		if f.isImage() {
+			return true
+		}
+	}
+	return false
 }
 
 // ClaudeOptions are the knobs specific to the Claude leaves (claude-api, claude-cli).

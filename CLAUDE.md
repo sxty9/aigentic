@@ -32,6 +32,29 @@ python3 $L/holistic-mcp.py    validate ./mcp          # MCP tool manifest
   from `~/.claude/projects/**/*.jsonl` and, at/above `SpillAt`, routes cli→api to keep dev
   headroom. Spill is off unless `AIGENTIC_CLI_BUDGET_5H` is set, and needs `~/.claude` read
   access (same constraint as `claude-cli`).
+- **Images are a precondition, not a complexity axis.** A request carrying images (`Inline`
+  media `image/*`) may only go to an engine that can SEE them: the router drops every blind
+  candidate from the chain BEFORE forwarding, so an image never reaches a text-only model that
+  would fabricate a description. Vision is a PROPERTY of the machine, probed not name-listed —
+  the Claude leaves see images; the ollama leaf only when its resolved model advertises
+  `"vision"` via `/api/show` (`ChooseConfig.VisionForKind`, wired by `VisionResolver`; the
+  `NewOllama` leaf re-checks and delivers the bytes on the chat `images` field). No capable
+  engine ⇒ the named `ErrNoVisionEngine` (→ 422), never a silent fallback; the choose router
+  stays gated by `hp_aigentic_api`, so a subject without the cost right can't reach it at all.
+  Unread non-image media (e.g. a PDF on the local engine) is NAMED in the answer, not only in
+  provenance (`finalize`/`noteMediaGap`).
+- **extract is a second router, purpose-built for OCR.** `extract.go` (Kind `extract`) is the
+  ONE text-extraction capability every document service reuses: given attached files it returns
+  the text they CONTAIN — including text INSIDE images (nameplates, labels, model/serial numbers,
+  handwriting), which is the AI-shaped part a plain PDF text-layer read never sees. It is NOT a new
+  engine: it owns the server-side transcription instruction (`extractInstruction`/`extractSystem`)
+  and forwards VERBATIM through `choose`, so the vision precondition, fallback, model reporting and
+  usage accounting are reused, not duplicated. Stateless — it never stores its output (the calling
+  service keeps the extract beside its document) and it does NOT parse a PDF's embedded text layer
+  (an exact, no-AI parsing step that belongs to the caller's upload pipeline). Because it reaches
+  the router (hence possibly the paid API and un-re-gatable in-process), it is in `paidKind` and
+  carries `hp_aigentic_api`, exactly like `choose`. P-layer entry `aigentic.Extract`; MCP tool
+  `aigentic.extract`.
 - **Engines are injectable** (`baseURL`/`*http.Client`/`ExecRunner` fields) so tests stub
   them — keep it that way; the suite must pass with no ollama/API key/CLI login.
 - **G: path context.** `context.go` confines `Request.Paths` under `<ContextRoot>/<Subject>`
@@ -120,3 +143,19 @@ wording always governs, independent of this file's age. Only this pointer belong
 store's concrete location lives in runtime configuration, never here. Do not paste the axiom text
 back into this file or keep a hand-maintained copy.
 <!-- END HOLISTIC AXIOMS -->
+
+<!-- holistic:constitution:begin -->
+# Holistic — Verfassung
+
+Für dieses Repository gelten die Holistic-Axiome und Implementierungsregeln.
+Ihr verbindlicher Wortlaut wird nicht hier geführt, sondern mit jedem
+Implementierungsauftrag mitgeliefert. So gilt immer der aktuelle Stand.
+
+**Arbeitest du im Auftrag von Mercury:** Der Wortlaut steht vollständig in
+deinem Prompt. Er hat Vorrang vor jeder anderen Fassung, die dir begegnet.
+
+**Arbeitest du in einer von Hand geöffneten Sitzung:** Implementiere nicht
+selbst. Lege die Arbeit als ToDo in Mercury an und führe es aus — dann kommt
+der verbindliche Wortlaut auf dem regulären Weg. Der Verfassungs-Bestand wird
+in der Laufzeit-Konfiguration der Instanz benannt.
+<!-- holistic:constitution:end -->

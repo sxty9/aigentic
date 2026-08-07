@@ -124,3 +124,45 @@ func withAsk(base Result, raw string, in Request) Result {
 	base.Output, base.Ask = parseAsk(raw, in)
 	return base
 }
+
+// finalize builds a leaf's Result from the raw model answer: it strips the structured-question
+// block (withAsk) and then names, IN THE ANSWER, any image or PDF attachment the running engine
+// could not read (canImage/canPDF describe what THIS engine perceives). The gap belongs in the
+// answer the user reads, not only in the provenance items — a request may carry an attachment the
+// running model cannot see, and an unnamed gap invites the model's text to fill it with invention.
+func finalize(base Result, raw string, in Request, canImage, canPDF bool) Result {
+	base = withAsk(base, raw, in)
+	base.Output = noteMediaGap(base.Output, unreadMedia(in, canImage, canPDF))
+	return base
+}
+
+// unreadMedia returns the display paths of image/PDF attachments the engine did NOT feed to the
+// model as perceivable content, given what it can perceive (canImage/canPDF). Text is read by every
+// engine; other binary types are name-only by design and are not reported here. It is how a leaf
+// tells the user which visual/document attachments went unseen.
+func unreadMedia(in Request, canImage, canPDF bool) []string {
+	var out []string
+	for _, f := range in.Inline {
+		switch {
+		case f.isImage() && !canImage:
+			out = append(out, f.Path)
+		case f.MediaType == "application/pdf" && !canPDF:
+			out = append(out, f.Path)
+		}
+	}
+	return out
+}
+
+// noteMediaGap appends a named, unmissable note to an answer for each attachment the model could not
+// read, so the gap is part of the answer itself. No gap => the answer is returned unchanged.
+func noteMediaGap(output string, unread []string) string {
+	if len(unread) == 0 {
+		return output
+	}
+	note := "⚠️ This model could not read the following attachment(s), so they were not considered: " +
+		strings.Join(unread, ", ") + "."
+	if strings.TrimSpace(output) == "" {
+		return note
+	}
+	return output + "\n\n" + note
+}

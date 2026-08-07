@@ -40,7 +40,8 @@ type ollamaClient struct {
 	ctxCap func() int
 
 	mu        sync.Mutex
-	autoModel string // lazily-detected model when none is configured (zero-config)
+	autoModel string          // lazily-detected model when none is configured (zero-config)
+	vision    map[string]bool // per-model vision capability, cached (a model's caps don't change)
 }
 
 func newOllamaClient(cfg OllamaConfig) *ollamaClient {
@@ -75,16 +76,18 @@ func (c *ollamaClient) numCtx() int {
 	return defaultMaxCtx
 }
 
-// chat issues a non-streaming /api/chat call and returns the assistant content + usage.
-func (c *ollamaClient) chat(ctx context.Context, model, system, user string, numPredict int) (string, Usage, error) {
-	return c.chatFormat(ctx, model, system, user, numPredict, nil)
+// chat issues a non-streaming /api/chat call and returns the assistant content + usage. images
+// (base64, no data-URI prefix) ride on the user message for a vision model; nil for a text turn.
+func (c *ollamaClient) chat(ctx context.Context, model, system, user string, numPredict int, images []string) (string, Usage, error) {
+	return c.chatFormat(ctx, model, system, user, numPredict, nil, images)
 }
 
 // chatFormat is chat with an optional ollama structured-output schema. When format is
 // non-nil it constrains the model to emit JSON matching that schema (so even a tiny model
 // follows the shape) and pins temperature to 0 for a deterministic estimate; the plain
-// leaf path passes nil and stays free-form.
-func (c *ollamaClient) chatFormat(ctx context.Context, model, system, user string, numPredict int, format any) (string, Usage, error) {
+// leaf path passes nil and stays free-form. images (base64) are attached to the user message
+// for a vision model — the classifier path passes nil.
+func (c *ollamaClient) chatFormat(ctx context.Context, model, system, user string, numPredict int, format any, images []string) (string, Usage, error) {
 	resolved, err := c.resolveModel(ctx, model)
 	if err != nil {
 		// No model to run (none configured and none pulled) is unavailability, not a hard
@@ -92,11 +95,15 @@ func (c *ollamaClient) chatFormat(ctx context.Context, model, system, user strin
 		return "", Usage{}, fmt.Errorf("%w: ollama: %v", ErrProcessorUnavailable, err)
 	}
 	model = resolved
-	msgs := make([]map[string]string, 0, 2)
+	msgs := make([]map[string]any, 0, 2)
 	if system != "" {
-		msgs = append(msgs, map[string]string{"role": "system", "content": system})
+		msgs = append(msgs, map[string]any{"role": "system", "content": system})
 	}
-	msgs = append(msgs, map[string]string{"role": "user", "content": user})
+	userMsg := map[string]any{"role": "user", "content": user}
+	if len(images) > 0 {
+		userMsg["images"] = images
+	}
+	msgs = append(msgs, userMsg)
 
 	options := map[string]any{"num_predict": numPredict, "num_ctx": c.numCtx()}
 	payload := map[string]any{
@@ -174,6 +181,69 @@ func (c *ollamaClient) resolveModel(ctx context.Context, requested string) (stri
 	}
 	c.autoModel = m
 	return m, nil
+}
+
+// supportsVision reports whether the resolved ollama model can see images. It is answered from the
+// model's OWN advertised capabilities (ollama's /api/show returns a "capabilities" list that names
+// "vision" for a multimodal model) — a PROPERTY of the running machine, never a hardcoded list of
+// model names that goes stale at the next release. The result is cached (a model's capabilities do
+// not change). A probe failure is returned as an error so the caller can refuse rather than guess.
+func (c *ollamaClient) supportsVision(ctx context.Context, model string) (bool, error) {
+	c.mu.Lock()
+	if v, ok := c.vision[model]; ok {
+		c.mu.Unlock()
+		return v, nil
+	}
+	c.mu.Unlock()
+
+	caps, err := c.showCapabilities(ctx, model)
+	if err != nil {
+		return false, err
+	}
+	seesImages := false
+	for _, cap := range caps {
+		if cap == "vision" {
+			seesImages = true
+			break
+		}
+	}
+	c.mu.Lock()
+	if c.vision == nil {
+		c.vision = map[string]bool{}
+	}
+	c.vision[model] = seesImages
+	c.mu.Unlock()
+	return seesImages, nil
+}
+
+// showCapabilities queries /api/show for a model's advertised capabilities (e.g. "completion",
+// "tools", "vision"). This is ollama's own report of what the model can do; the leaf reads it rather
+// than assuming, so a local vision model qualifies and a text model is refused, both by fact.
+func (c *ollamaClient) showCapabilities(ctx context.Context, model string) ([]string, error) {
+	body, err := json.Marshal(map[string]any{"model": model})
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.base+"/api/show", bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("%w: ollama /api/show: %v", ErrProcessorUnavailable, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("%w: ollama /api/show: status %d", ErrProcessorUnavailable, resp.StatusCode)
+	}
+	var out struct {
+		Capabilities []string `json:"capabilities"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, err
+	}
+	return out.Capabilities, nil
 }
 
 // listModels queries /api/tags and returns the locally-pulled model names.
@@ -293,6 +363,18 @@ func OllamaStatus(ctx context.Context, cfg OllamaConfig) ([]LoadedModel, error) 
 	return newOllamaClient(cfg).ps(ctx, time.Now())
 }
 
+// imageData returns the base64 image payloads from a request's inline attachments, in order, for
+// ollama's /api/chat "images" field. Empty content is skipped (nothing to deliver).
+func imageData(in Request) []string {
+	var out []string
+	for _, f := range in.Inline {
+		if f.isImage() && f.Content != "" {
+			out = append(out, f.Content)
+		}
+	}
+	return out
+}
+
 // NewOllama returns the local-ollama leaf processor (Kind "ollama"). lim carries the
 // server-side answer-token and path-context guards.
 func NewOllama(cfg OllamaConfig, lim Limits) prizm.Processor {
@@ -305,15 +387,37 @@ func NewOllama(cfg OllamaConfig, lim Limits) prizm.Processor {
 		if model == "" {
 			model = c.model
 		}
+		// Images decide the engine: a text-only local model must NEVER be handed an image request,
+		// or it answers as if it had seen pictures it never received. Resolve the concrete model and
+		// consult its OWN advertised capabilities; refuse with a named state when it cannot see images
+		// (the router already keeps blind models off image requests — this guards the forced/direct
+		// path that reaches the leaf without the router). A vision model is fed the image bytes.
+		var images []string
+		if in.hasImages() {
+			resolved, rerr := c.resolveModel(ctx, model)
+			if rerr != nil {
+				return Result{}, fmt.Errorf("%w: ollama: %v", ErrProcessorUnavailable, rerr)
+			}
+			ok, verr := c.supportsVision(ctx, resolved)
+			if verr != nil {
+				return Result{}, fmt.Errorf("%w: cannot determine whether ollama model %q sees images: %v", ErrNoVisionEngine, resolved, verr)
+			}
+			if !ok {
+				return Result{}, fmt.Errorf("%w: ollama model %q has no vision capability", ErrNoVisionEngine, resolved)
+			}
+			images = imageData(in)
+		}
 		prompt, items, truncated, err := assemble(ctx, env, in, lim)
 		if err != nil {
 			return Result{}, err
 		}
-		content, usage, err := c.chat(ctx, model, askSystem(defaultSystem, in), prompt, answerBudget(in, lim.MaxTokens))
+		content, usage, err := c.chat(ctx, model, askSystem(defaultSystem, in), prompt, answerBudget(in, lim.MaxTokens), images)
 		if err != nil {
 			return Result{}, err
 		}
 		usage.Truncated = truncated
-		return withAsk(Result{Engine: KindOllama, Model: model, Usage: usage, Context: items}, content, in), nil
+		// The local engine reads images only via a vision model (delivered above); it never reads
+		// PDFs, so a PDF attachment is named as unread in the answer.
+		return finalize(Result{Engine: KindOllama, Model: model, Usage: usage, Context: items}, content, in, true, false), nil
 	})
 }

@@ -6,6 +6,11 @@
       "name": "aigentic.ask",
       "right": "hp_aigentic_run",
       "description": "Ask an AI a question and get its answer; the router picks the engine by difficulty unless one is pinned. The paid Claude API additionally requires the aigentic 'cost:api' right (hp_aigentic_api)."
+    },
+    {
+      "name": "aigentic.extract",
+      "right": "hp_aigentic_api",
+      "description": "Extract the text contained in attached files (images, scans, PDFs) as plain text, reading text inside images too. Routes through the vision-aware router, so it carries the aigentic 'cost:api' right (hp_aigentic_api) — it may reach the paid Claude API."
     }
   ]
 }
