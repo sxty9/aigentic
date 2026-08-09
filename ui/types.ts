@@ -28,7 +28,7 @@ export interface AigenticRequest {
 }
 
 // A structured question the model posed on an interactive turn — rendered as clickable options in
-// the chat bubble. Mirrors the aigentic backend's Ask shape (and @holistic/ui's AskChoice props).
+// the chat bubble. Mirrors the aigentic backend's Ask shape (and @holisdk/ui's AskChoice props).
 export interface AskOption {
   label: string;
   description?: string;
