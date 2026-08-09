@@ -15,7 +15,7 @@ import {
   formatBytes,
   type ServiceApiClient,
   type ServiceContextProps,
-} from '@holistic/ui';
+} from '@holisdk/ui';
 import { EnginePicker, pickerFields, type Picker } from './EnginePicker';
 import { AnswerBody, EngineTag, runAigentic } from './aiExchange';
 import { cleanAnswer, fileToInline, type InlinePart } from './aiFiles';

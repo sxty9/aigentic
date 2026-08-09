@@ -10,7 +10,7 @@ import {
   Text,
   useLiveQuery,
   type ServiceContextProps,
-} from '@holistic/ui';
+} from '@holisdk/ui';
 import type { Info, SecretStatus } from './types';
 import { ConnectAiPanel } from './ConnectAiPanel';
 import { ChatTab } from './ChatTab';
