@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { ServiceApiClient } from '@holistic/ui';
+import type { ServiceApiClient } from '@holisdk/ui';
 import { cleanAnswer } from './aiFiles';
 import { CHAT_SEED_KEY, type Ask, type ChatSeed } from './types';
 

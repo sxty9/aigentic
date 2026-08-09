@@ -11,7 +11,7 @@ import {
   type BreadcrumbSegment,
   type FileEntry,
   type ServiceApiClient,
-} from '@holistic/ui';
+} from '@holisdk/ui';
 import { bytesToBase64, type InlinePart } from './aiFiles';
 
 // A picker over the user's Holistic Files (Samba) share, mounted in the chat so files can be attached

@@ -58,7 +58,7 @@ backend/
   internal/rights/          hp_aigentic_* group constants (mirror permissions/aigentic.json)
   internal/grave/           graveyard backend selector (memory default; lakearch tagged)
 permissions/aigentic.json the rights manifest declared to privleg
-ui/                       the @holistic/ui dashboard plugin
+ui/                       the @holisdk/ui dashboard plugin
 service                   the holistic CLI (auto-detects id from permissions/aigentic.json)
 ```
 

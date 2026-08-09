@@ -9,7 +9,7 @@ import {
   Text,
   useLiveQuery,
   type ServiceContextProps,
-} from '@holistic/ui';
+} from '@holisdk/ui';
 import type { SecretStatus, TokenStatus } from './types';
 
 // ConnectAiPanel lets a user link THEIR OWN AI credentials so no admin bears the token load:
