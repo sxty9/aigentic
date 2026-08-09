@@ -13,7 +13,7 @@ import {
   type ServiceApiClient,
   type ServiceUiBridge,
   type TextPayload,
-} from '@holistic/ui';
+} from '@holisdk/ui';
 import { EnginePicker, pickerFields, usePicker } from './EnginePicker';
 import { bytesToBase64, cleanAnswer, type InlinePart } from './aiFiles';
 import { CHAT_SEED_KEY, type AigenticRequest, type ChatSeed, type Result, type RunResponse } from './types';

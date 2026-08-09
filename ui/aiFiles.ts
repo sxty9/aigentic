@@ -1,6 +1,6 @@
 // Pure (no-JSX, no-DOM) helpers shared across every aigentic AI surface — the folder + single-file
 // "Ask AI" panels and the chat tab: file→inline-part encoding, answer cleaning, and readability.
-import type { FileEntry } from '@holistic/ui';
+import type { FileEntry } from '@holisdk/ui';
 
 // An inline file part sent to the backend: text rides in `content`; images/PDFs ride as base64 in
 // `content` with a `mediaType` (image/png, application/pdf, …).

@@ -110,7 +110,7 @@ python3 $L/holistic-mcp.py    validate ./mcp          # MCP tool manifest
    `prizm.ErrInvalidRequest` (→ 400).
 4. The lakearch backend lives behind the `lakearch` build tag so the default build stays
    pure-Go (no C toolchain / library needed).
-5. UI may import only `@holistic/ui` and `react`. The daemon runs unprivileged.
+5. UI may import only `@holisdk/ui` and `react`. The daemon runs unprivileged.
 6. The Anthropic key is a write-only secret: admin-only + CSRF to set/clear, never returned in
    a response or logged (only `configured`/`source`/masked `hint`). Keep `secret.Store` the sole
    path that touches the key file.
